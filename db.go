@@ -7,64 +7,45 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/fox-one/mixin-sdk-go"
+	"github.com/fox-one/mixin-sdk-go/v2"
+	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
 	"github.com/google/uuid"
 	g "github.com/pandodao/generic"
-	"github.com/pandodao/mtg/mtgpack"
-	"github.com/shopspring/decimal"
 )
-
-func buildIndexKey(prefix []byte, values ...any) []byte {
-	enc := mtgpack.NewEncoder()
-	if _, err := enc.Write(prefix); err != nil {
-		panic(err)
-	}
-
-	if err := enc.EncodeValues(values...); err != nil {
-		panic(err)
-	}
-
-	return enc.Bytes()
-}
 
 var (
-	utxoPrefix        = []byte("utxo:")
-	transactionPrefix = []byte("tx:")
-	offsetPrefix      = []byte("offset:")
-	jobPrefix         = []byte("job:")
+	requestPrefix = []byte("r:")
+	vaultPrefix   = []byte("v:")
+	jobPrefix     = []byte("j:")
 )
 
-func hashMembers(ids []string) mixin.Hash {
+func hashMembers(ids []string) mixinnet.Hash {
 	sort.Strings(ids)
 	var in string
 	for _, id := range ids {
 		in = in + id
 	}
 
-	return mixin.NewHash([]byte(in))
+	return mixinnet.NewHash([]byte(in))
 }
 
-func saveTransaction(txn *badger.Txn, utxo *mixin.MultisigUTXO) error {
+// saveRequest 保存已经 spent 的 multisiq request
+func saveRequest(txn *badger.Txn, req *mixin.SafeMultisigRequest) error {
 	pk := buildIndexKey(
-		transactionPrefix,
-		hashMembers(utxo.Members),
-		utxo.Threshold,
-		utxo.UpdatedAt.UnixNano(),
-		g.Must(mixin.HashFromString(utxo.SignedBy)),
+		requestPrefix,
+		hashMembers(req.Senders),
+		req.SendersThreshold,
+		req.CreatedAt.UnixNano(),
+		uuid.MustParse(req.RequestID),
 	)
 
-	tx := TransactionFromUTXO(utxo)
-	b, err := json.Marshal(tx)
-	if err != nil {
-		panic(err)
-	}
-
-	return txn.Set(pk, b)
+	e := badger.NewEntry(pk, g.Must(json.Marshal(req)))
+	return txn.SetEntry(e)
 }
 
-func listTransactions(txn *badger.Txn, members []string, threshold uint8, since time.Time, limit int) ([]*Transaction, error) {
+func listRequests(txn *badger.Txn, members []string, threshold uint8, since time.Time, limit int) ([]*mixin.SafeMultisigRequest, error) {
 	prefix := buildIndexKey(
-		transactionPrefix,
+		requestPrefix,
 		hashMembers(members),
 		threshold,
 	)
@@ -75,193 +56,30 @@ func listTransactions(txn *badger.Txn, members []string, threshold uint8, since 
 	it := txn.NewIterator(opts)
 	defer it.Close()
 
-	var (
-		txs []*Transaction
-	)
-
-	seekKey := prefix
-	if !since.IsZero() {
-		seekKey = buildIndexKey(prefix, since.UnixNano())
+	if since.IsZero() {
+		it.Seek(prefix)
+	} else {
+		it.Seek(buildIndexKey(prefix, since.UnixNano()))
 	}
 
-	for it.Seek(seekKey); it.ValidForPrefix(prefix) && len(txs) < limit; it.Next() {
+	var requests []*mixin.SafeMultisigRequest
+	for ; it.ValidForPrefix(prefix) && len(requests) < limit; it.Next() {
 		item := it.Item()
 
-		var tx Transaction
-		err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &tx)
-		})
-
-		if err != nil {
+		var req mixin.SafeMultisigRequest
+		if err := item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &req)
+		}); err != nil {
 			return nil, err
 		}
 
-		txs = append(txs, &tx)
+		requests = append(requests, &req)
 	}
 
-	return txs, nil
+	return requests, nil
 }
 
-func saveUTXO(txn *badger.Txn, utxo *mixin.MultisigUTXO) error {
-	pk := buildIndexKey(
-		utxoPrefix,
-		hashMembers(utxo.Members),
-		utxo.Threshold,
-		uuid.MustParse(utxo.AssetID),
-		utxo.UpdatedAt.UnixNano(),
-		uuid.MustParse(utxo.UTXOID),
-	)
-
-	if utxo.State == mixin.UTXOStateSpent {
-		if err := saveTransaction(txn, utxo); err != nil {
-			return err
-		}
-
-		return txn.Delete(pk)
-	}
-
-	b, err := json.Marshal(utxo)
-	if err != nil {
-		panic(err)
-	}
-
-	return txn.Set(pk, b)
-}
-
-func groupUTXO(txn *badger.Txn, members []string, threshold uint8) ([]*Balance, []*Transaction, error) {
-	var (
-		balances     = map[string]*Balance{}
-		transactions = map[string]*Transaction{}
-	)
-
-	prefix := buildIndexKey(utxoPrefix, hashMembers(members), threshold)
-	opts := badger.DefaultIteratorOptions
-	opts.PrefetchSize = 100
-	it := txn.NewIterator(opts)
-	defer it.Close()
-
-	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-		item := it.Item()
-
-		var utxo mixin.MultisigUTXO
-		err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &utxo)
-		})
-
-		if err != nil {
-			return nil, nil, err
-		}
-
-		b, ok := balances[utxo.AssetID]
-		if !ok {
-			b = &Balance{
-				AssetID: utxo.AssetID,
-			}
-
-			balances[utxo.AssetID] = b
-		}
-
-		b.Amount = b.Amount.Add(utxo.Amount)
-
-		switch utxo.State {
-		case mixin.UTXOStateUnspent:
-			b.UnspentAmount = b.UnspentAmount.Add(utxo.Amount)
-		case mixin.UTXOStateSigned:
-			b.SignedAmount = b.SignedAmount.Add(utxo.Amount)
-			transactions[utxo.SignedBy] = TransactionFromUTXO(&utxo)
-		}
-	}
-
-	return mapValues(balances), mapValues(transactions), nil
-}
-
-func listUnspent(
-	txn *badger.Txn,
-	members []string,
-	threshold uint8,
-	assetID string,
-	amount decimal.Decimal,
-) ([]*mixin.MultisigUTXO, error) {
-	prefix := buildIndexKey(
-		utxoPrefix,
-		hashMembers(members),
-		threshold,
-		uuid.MustParse(assetID),
-	)
-
-	opts := badger.DefaultIteratorOptions
-	opts.PrefetchSize = 10
-	it := txn.NewIterator(opts)
-	defer it.Close()
-
-	var (
-		utxos []*mixin.MultisigUTXO
-		sum   decimal.Decimal
-	)
-
-	for it.Seek(prefix); it.ValidForPrefix(prefix) && sum.LessThan(amount); it.Next() {
-		item := it.Item()
-
-		var utxo mixin.MultisigUTXO
-		err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &utxo)
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		if utxo.State != mixin.UTXOStateUnspent {
-			continue
-		}
-
-		utxos = append(utxos, &utxo)
-		sum = sum.Add(utxo.Amount)
-	}
-
-	return utxos, nil
-}
-
-func saveOffset(txn *badger.Txn, members []string, threshold uint8, offset time.Time) error {
-	pk := buildIndexKey(
-		offsetPrefix,
-		hashMembers(members),
-		threshold,
-	)
-
-	b, err := json.Marshal(offset)
-	if err != nil {
-		panic(err)
-	}
-
-	return txn.Set(pk, b)
-}
-
-func getOffset(txn *badger.Txn, members []string, threshold uint8) (time.Time, error) {
-	pk := buildIndexKey(
-		offsetPrefix,
-		hashMembers(members),
-		threshold,
-	)
-
-	var offset time.Time
-	b, err := txn.Get(pk)
-	if err != nil {
-		if errors.Is(err, badger.ErrKeyNotFound) {
-			return offset, nil
-		}
-
-		return offset, err
-	}
-
-	err = b.Value(func(val []byte) error {
-		return json.Unmarshal(val, &offset)
-	})
-
-	return offset, err
-}
-
-func saveJob(txn *badger.Txn, job *Job) error {
+func saveJob(txn *badger.Txn, job *Job, ttl time.Duration) error {
 	pk := buildIndexKey(
 		jobPrefix,
 		hashMembers(job.Members),
@@ -273,20 +91,11 @@ func saveJob(txn *badger.Txn, job *Job) error {
 		panic(err)
 	}
 
-	return txn.Set(pk, b)
+	e := badger.NewEntry(pk, b).WithTTL(ttl)
+	return txn.SetEntry(e)
 }
 
-func deleteJob(txn *badger.Txn, job *Job) error {
-	pk := buildIndexKey(
-		jobPrefix,
-		hashMembers(job.Members),
-		job.Threshold,
-	)
-
-	return txn.Delete(pk)
-}
-
-func listJobs(txn *badger.Txn, limit int) ([]*Job, error) {
+func listJobs(txn *badger.Txn) ([]*Job, error) {
 	var jobs []*Job
 
 	opts := badger.DefaultIteratorOptions
@@ -310,4 +119,74 @@ func listJobs(txn *badger.Txn, limit int) ([]*Job, error) {
 	}
 
 	return jobs, nil
+}
+
+func ListJobs(db *badger.DB) ([]*Job, error) {
+	txn := db.NewTransaction(false)
+	defer txn.Discard()
+
+	return listJobs(txn)
+}
+
+func saveVault(txn *badger.Txn, vault *Vault) error {
+	pk := buildIndexKey(
+		vaultPrefix,
+		hashMembers(vault.Members),
+		vault.Threshold,
+	)
+
+	b, err := json.Marshal(vault)
+	if err != nil {
+		panic(err)
+	}
+
+	e := badger.NewEntry(pk, b)
+	return txn.SetEntry(e)
+}
+
+func findVault(txn *badger.Txn, members []string, threshold uint8) (*Vault, error) {
+	pk := buildIndexKey(
+		vaultPrefix,
+		hashMembers(members),
+		threshold,
+	)
+
+	item, err := txn.Get(pk)
+	if err != nil {
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return &Vault{
+				Members:   members,
+				Threshold: threshold,
+			}, nil
+		}
+
+		return nil, err
+	}
+
+	var vault Vault
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &vault)
+	}); err != nil {
+		return nil, err
+	}
+
+	return &vault, nil
+}
+
+func FindVault(db *badger.DB, members []string, threshold uint8) (*Vault, error) {
+	txn := db.NewTransaction(false)
+	defer txn.Discard()
+
+	return findVault(txn, members, threshold)
+}
+
+func SaveVault(db *badger.DB, vault *Vault) error {
+	txn := db.NewTransaction(true)
+	defer txn.Discard()
+
+	if err := saveVault(txn, vault); err != nil {
+		return err
+	}
+
+	return txn.Commit()
 }

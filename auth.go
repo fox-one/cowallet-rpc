@@ -1,12 +1,11 @@
 package cowallet
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
-	"github.com/fox-one/mixin-sdk-go"
-	"github.com/golang-jwt/jwt"
-	"github.com/twitchtv/twirp"
+	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/yiplee/go-cache"
 	"golang.org/x/sync/singleflight"
 )
@@ -16,7 +15,7 @@ func extractBearerToken(r *http.Request) string {
 	return strings.TrimPrefix(token, "Bearer ")
 }
 
-func handleAuth(issuer string) func(next http.Handler) http.Handler {
+func handleAuth() func(next http.Handler) http.Handler {
 	var (
 		users = cache.New[string, *User]()
 		sf    singleflight.Group
@@ -27,16 +26,15 @@ func handleAuth(issuer string) func(next http.Handler) http.Handler {
 			ctx := r.Context()
 			token := extractBearerToken(r)
 
-			var claim jwt.StandardClaims
-			_, _ = jwt.ParseWithClaims(token, &claim, nil)
-
-			if err := claim.Valid(); err != nil {
-				_ = twirp.WriteError(w, twirp.Unauthenticated.Error(err.Error()))
+			var key mixin.OauthKeystore
+			if err := json.NewDecoder(strings.NewReader(token)).Decode(&key); err != nil {
+				next.ServeHTTP(w, r)
 				return
 			}
 
-			if claim.Issuer != issuer {
-				_ = twirp.WriteError(w, twirp.NewError(twirp.Unauthenticated, "auth required"))
+			client, err := mixin.NewFromOauthKeystore(&key)
+			if err != nil {
+				next.ServeHTTP(w, r)
 				return
 			}
 
@@ -45,14 +43,14 @@ func handleAuth(issuer string) func(next http.Handler) http.Handler {
 					return u, nil
 				}
 
-				u, err := mixin.UserMe(ctx, token)
+				u, err := client.UserMe(ctx)
 				if err != nil {
 					return nil, err
 				}
 
 				user := &User{
 					MixinID: u.UserID,
-					Token:   token,
+					Key:     key,
 				}
 
 				users.Set(token, user)

@@ -5,33 +5,20 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/asaskevich/govalidator"
 	"github.com/dgraph-io/badger/v4"
 	"golang.org/x/sync/errgroup"
 )
 
-type Config struct {
-	Issuer string `valid:"required"`
-}
-
 type Server struct {
-	db  *badger.DB
-	cfg Config
+	db *badger.DB
 }
 
-func NewServer(db *badger.DB, cfg Config) Server {
-	if _, err := govalidator.ValidateStruct(cfg); err != nil {
-		panic(err)
-	}
-
-	return Server{
-		db:  db,
-		cfg: cfg,
-	}
+func NewServer(db *badger.DB) Server {
+	return Server{db: db}
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	dur := time.Millisecond
+	dur := time.Minute
 
 	for {
 		_ = s.run(ctx)
@@ -45,30 +32,21 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) run(ctx context.Context) error {
-	txn := s.db.NewTransaction(true)
-	defer txn.Discard()
-
-	const limit = 10
-
-	jobs, err := listJobs(txn, limit)
+	jobs, err := ListJobs(s.db)
 	if err != nil {
-		slog.Error("list jobs failed", slog.Any("err", err))
+		slog.Error("ListJobs", slog.Any("err", err))
 		return err
 	}
 
 	var g errgroup.Group
+	g.SetLimit(10)
+
 	for idx := range jobs {
 		job := jobs[idx]
 		g.Go(func() error {
 			return handleJob(ctx, s.db, job)
 		})
-
-		if err := deleteJob(txn, job); err != nil {
-			slog.Error("delete job failed", slog.Any("err", err))
-			return err
-		}
 	}
 
-	_ = txn.Commit()
 	return g.Wait()
 }
