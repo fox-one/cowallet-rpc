@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/asaskevich/govalidator"
+	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/cors"
@@ -168,17 +169,32 @@ func (s *Server) listRequests(w http.ResponseWriter, r *http.Request) {
 	threshold := cast.ToUint8(q.Get("threshold"))
 	since := cast.ToTime(q.Get("offset"))
 	limit := cast.ToInt(q.Get("limit"))
+	assetID := q.Get("asset")
 	if limit <= 0 || limit > 100 {
-		limit = 10
+		limit = 20
 	}
 
 	txn := s.db.NewTransaction(false)
 	defer txn.Discard()
 
-	requests, err := listRequests(txn, members, threshold, since, limit)
-	if err != nil {
-		renderErr(w, err)
-		return
+	requests := []*mixin.SafeMultisigRequest{}
+	for {
+		batch, err := listRequests(txn, members, threshold, since, limit)
+		if err != nil {
+			renderErr(w, err)
+			return
+		}
+
+		for _, r := range batch {
+			since = r.CreatedAt
+			if assetID != "" && r.AssetID == assetID {
+				requests = append(requests, r)
+			}
+		}
+
+		if len(batch) < limit || len(requests) >= limit {
+			break
+		}
 	}
 
 	renderJSON(w, requests)
