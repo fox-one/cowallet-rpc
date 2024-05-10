@@ -17,6 +17,8 @@ require (
 	golang.org/x/sync v0.6.0
 )
 
+require golang.org/x/exp v0.0.0-20220218215828-6cf2b201936e // indirect
+
 require (
 	filippo.io/edwards25519 v1.0.0 // indirect
 	github.com/btcsuite/btcutil v1.0.2 // indirect
@@ -41,6 +43,7 @@ require (
 	github.com/rs/cors v1.11.0
 	github.com/vmihailenco/tagparser v0.1.2 // indirect
 	github.com/zeebo/blake3 v0.2.3 // indirect
+	github.com/zyedidia/generic v1.2.1
 	go.opencensus.io v0.22.5 // indirect
 	golang.org/x/crypto v0.16.0 // indirect
 	golang.org/x/net v0.17.0 // indirect

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/asaskevich/govalidator"
-	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/cors"
@@ -26,7 +25,7 @@ func (s *Server) Handler() http.Handler {
 
 	m.Get("/vaults", s.findVault)
 	m.Put("/vaults", s.updateVault)
-	m.Get("/requests", s.listRequests)
+	m.Get("/snapshots", s.listSnapshots)
 
 	return m
 }
@@ -150,7 +149,7 @@ func (s *Server) findVault(w http.ResponseWriter, r *http.Request) {
 	renderJSON(w, vault)
 }
 
-func (s *Server) listRequests(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user, ok := UserFrom(ctx)
 	if !ok {
@@ -177,25 +176,12 @@ func (s *Server) listRequests(w http.ResponseWriter, r *http.Request) {
 	txn := s.db.NewTransaction(false)
 	defer txn.Discard()
 
-	requests := []*mixin.SafeMultisigRequest{}
-	for {
-		batch, err := listRequests(txn, members, threshold, since, limit)
-		if err != nil {
-			renderErr(w, err)
-			return
-		}
-
-		for _, r := range batch {
-			since = r.CreatedAt
-			if assetID != "" && r.AssetID == assetID {
-				requests = append(requests, r)
-			}
-		}
-
-		if len(batch) < limit || len(requests) >= limit {
-			break
-		}
+	snapshots, err := listSnapshots(txn, members, threshold, assetID, since, limit)
+	if err != nil {
+		slog.Error("listSnapshots", "error", err)
+		renderErr(w, err)
+		return
 	}
 
-	renderJSON(w, requests)
+	renderJSON(w, snapshots)
 }

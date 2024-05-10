@@ -2,12 +2,15 @@ package cowallet
 
 import (
 	"context"
+	"encoding/hex"
 	"log/slog"
 	"time"
 
 	"github.com/asaskevich/govalidator"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/fox-one/mixin-sdk-go/v2"
+	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
+	"github.com/zyedidia/generic/mapset"
 )
 
 type Job struct {
@@ -33,18 +36,22 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 	}
 
 	var (
-		a, b          uint64
-		offset        = vault.Offset
-		assets        = map[string]*Asset{}
-		spentRequests = map[string]*mixin.SafeMultisigRequest{}
+		a, b            uint64
+		offset          = vault.Offset
+		assets          = map[string]*Asset{}
+		snapshots       []*Snapshot
+		handledSignedBy = mapset.New[string]()
 	)
 
+	addr := mixin.RequireNewMixAddress(job.Members, job.Threshold).String()
+
 	for {
+		const limit = 500
 		outputs, err := client.SafeListUtxos(ctx, mixin.SafeListUtxoOption{
 			Members:   vault.Members,
 			Threshold: vault.Threshold,
 			Offset:    offset,
-			Limit:     500,
+			Limit:     limit,
 		})
 
 		if err != nil {
@@ -55,15 +62,34 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 		for _, output := range outputs {
 			offset = output.Sequence + 1
 
+			// 收款
+			if ok := output.OutputIndex > 0 &&
+				len(output.Senders) > 0 &&
+				mixin.RequireNewMixAddress(output.Senders, output.SendersThreshold).String() == addr; !ok {
+				snapshots = append(snapshots, outputToSnapshot(output))
+			}
+
 			if output.State == mixin.SafeUtxoStateSpent {
-				if _, ok := spentRequests[output.SignedBy]; !ok {
+				if !handledSignedBy.Has(output.SignedBy) {
 					req, err := client.SafeReadMultisigRequests(ctx, output.SignedBy)
 					if err != nil {
 						slog.Error("SafeReadMultisigRequests", "error", err)
 						return err
 					}
 
-					spentRequests[output.SignedBy] = req
+					if req.Amount.IsZero() {
+						h, _ := mixinnet.HashFromString(req.TransactionHash)
+						utxo, err := client.SafeReadUtxoByHash(ctx, h, 0)
+						if err != nil {
+							slog.Error("SafeReadUtxoByHash", "error", err)
+							return err
+						}
+
+						req.Amount = utxo.Amount
+					}
+
+					snapshots = append(snapshots, requestToSnapshot(req))
+					handledSignedBy.Put(output.SignedBy)
 				}
 
 				a = output.Sequence + 1
@@ -111,9 +137,9 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 	txn := db.NewTransaction(true)
 	defer txn.Discard()
 
-	for _, req := range spentRequests {
-		if err := saveRequest(txn, req); err != nil {
-			slog.Error("saveRequest", "error", err)
+	for _, s := range snapshots {
+		if err := saveSnapshot(txn, s, job.Members, job.Threshold); err != nil {
+			slog.Error("saveSnapshot", "error", err)
 			return err
 		}
 	}
@@ -132,4 +158,38 @@ func getNewOffset(a, b uint64) uint64 {
 	} else {
 		return min(a, b)
 	}
+}
+
+func outputToSnapshot(output *mixin.SafeUtxo) *Snapshot {
+	s := &Snapshot{
+		ID:        output.OutputID,
+		CreatedAt: output.CreatedAt,
+		AssetID:   output.AssetID,
+		Amount:    output.Amount,
+	}
+
+	if b, err := hex.DecodeString(output.Extra); err == nil {
+		s.Memo = string(b)
+	}
+
+	if len(output.Senders) > 0 {
+		s.Opponent = mixin.RequireNewMixAddress(output.Senders, output.SendersThreshold).String()
+	}
+
+	return s
+}
+
+func requestToSnapshot(req *mixin.SafeMultisigRequest) *Snapshot {
+	s := &Snapshot{
+		ID:        req.RequestID,
+		CreatedAt: req.CreatedAt,
+		AssetID:   req.AssetID,
+		Amount:    req.Amount.Neg(),
+	}
+
+	if b, err := hex.DecodeString(req.Extra); err == nil {
+		s.Memo = string(b)
+	}
+
+	return s
 }

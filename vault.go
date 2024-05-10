@@ -23,3 +23,12 @@ type Vault struct {
 	Assets    []*Asset  `json:"assets"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+type Snapshot struct {
+	ID        string          `json:"id"`
+	CreatedAt time.Time       `json:"created_at"`
+	AssetID   string          `json:"asset_id"`
+	Amount    decimal.Decimal `json:"amount"`
+	Opponent  string          `json:"opponent"`
+	Memo      string          `json:"memo"`
+}

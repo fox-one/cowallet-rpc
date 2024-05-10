@@ -7,5 +7,4 @@ func mapValues[K comparable, V any](m map[K]V) []V {
 	}
 
 	return values
-
 }

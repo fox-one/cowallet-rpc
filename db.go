@@ -7,16 +7,14 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
 	"github.com/google/uuid"
-	g "github.com/pandodao/generic"
 )
 
 var (
-	requestPrefix = []byte("r:")
-	vaultPrefix   = []byte("v:")
-	jobPrefix     = []byte("j:")
+	vaultPrefix    = []byte("v:")
+	jobPrefix      = []byte("j:")
+	snapshotPrefix = []byte("s:")
 )
 
 func hashMembers(ids []string) mixinnet.Hash {
@@ -29,54 +27,115 @@ func hashMembers(ids []string) mixinnet.Hash {
 	return mixinnet.NewHash([]byte(in))
 }
 
-// saveRequest 保存已经 spent 的 multisiq request
-func saveRequest(txn *badger.Txn, req *mixin.SafeMultisigRequest) error {
-	pk := buildIndexKey(
-		requestPrefix,
-		hashMembers(req.Senders),
-		req.SendersThreshold,
-		req.CreatedAt.UnixNano(),
-		uuid.MustParse(req.RequestID),
-	)
+func saveSnapshot(txn *badger.Txn, s *Snapshot, members []string, threshold uint8) error {
+	pk := buildIndexKey(snapshotPrefix, uuid.MustParse(s.ID))
 
-	e := badger.NewEntry(pk, g.Must(json.Marshal(req)))
-	return txn.SetEntry(e)
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+
+	if err := txn.Set(pk, b); err != nil {
+		return err
+	}
+
+	// index 1
+	{
+		key := buildIndexKey(
+			snapshotPrefix,
+			hashMembers(members),
+			threshold,
+			s.CreatedAt.UnixNano(),
+			uuid.MustParse(s.ID),
+		)
+
+		if err := txn.Set(key, nil); err != nil {
+			return err
+		}
+	}
+
+	// index with asset
+	{
+		key := buildIndexKey(
+			snapshotPrefix,
+			hashMembers(members),
+			threshold,
+			uuid.MustParse(s.AssetID),
+			s.CreatedAt.UnixNano(),
+			uuid.MustParse(s.ID),
+		)
+
+		if err := txn.Set(key, nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-func listRequests(txn *badger.Txn, members []string, threshold uint8, since time.Time, limit int) ([]*mixin.SafeMultisigRequest, error) {
+func findSnapshot(txn *badger.Txn, id uuid.UUID) (*Snapshot, error) {
+	key := buildIndexKey(snapshotPrefix, id)
+	item, err := txn.Get(key)
+	if err != nil {
+		return nil, err
+	}
+
+	var s Snapshot
+	if err := item.Value(func(b []byte) error {
+		return json.Unmarshal(b, &s)
+	}); err != nil {
+		return nil, err
+	}
+
+	return &s, nil
+}
+
+func listSnapshots(txn *badger.Txn, members []string, threshold uint8, assetID string, offset time.Time, limit int) ([]*Snapshot, error) {
+	opts := badger.DefaultIteratorOptions
+	opts.PrefetchSize = limit
+	opts.Reverse = true
+
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
 	prefix := buildIndexKey(
-		requestPrefix,
+		snapshotPrefix,
 		hashMembers(members),
 		threshold,
 	)
 
-	opts := badger.DefaultIteratorOptions
-	opts.PrefetchSize = limit
-	opts.Reverse = true
-	it := txn.NewIterator(opts)
-	defer it.Close()
-
-	if since.IsZero() {
-		it.Seek(prefix)
-	} else {
-		it.Seek(buildIndexKey(prefix, since.UnixNano()))
-	}
-
-	var requests []*mixin.SafeMultisigRequest
-	for ; it.ValidForPrefix(prefix) && len(requests) < limit; it.Next() {
-		item := it.Item()
-
-		var req mixin.SafeMultisigRequest
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &req)
-		}); err != nil {
+	if assetID != "" {
+		asset, err := uuid.Parse(assetID)
+		if err != nil {
 			return nil, err
 		}
 
-		requests = append(requests, &req)
+		prefix = buildIndexKey(prefix, asset)
 	}
 
-	return requests, nil
+	ts := offset.UnixNano()
+	if ts > 0 {
+		it.Seek(buildIndexKey(prefix, ts))
+	} else {
+		it.Seek(prefix)
+	}
+
+	snapshots := []*Snapshot{}
+	for ; it.ValidForPrefix(prefix) && len(snapshots) < limit; it.Next() {
+		key := it.Item().Key()
+
+		var id uuid.UUID
+		decodeIndexKey(key, prefix, &ts, &id)
+
+		s, err := findSnapshot(txn, id)
+		if err != nil {
+			return nil, err
+		}
+
+		snapshots = append(snapshots, s)
+	}
+
+	return snapshots, nil
 }
 
 func saveJob(txn *badger.Txn, job *Job, ttl time.Duration) error {
