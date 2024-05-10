@@ -100,6 +100,11 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 		}
 	}
 
+	vault.Assets = vault.Assets[0:0]
+	for _, asset := range assets {
+		vault.Assets = append(vault.Assets, asset)
+	}
+
 	vault.Offset = getNewOffset(a, b)
 	vault.UpdatedAt = time.Now()
 

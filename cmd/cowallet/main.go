@@ -37,6 +37,8 @@ func main() {
 		return
 	}
 
+	slog.Info("cowallet rpc launch", "ver", "0.01")
+
 	svr := backend.NewServer(db)
 
 	s := &http.Server{

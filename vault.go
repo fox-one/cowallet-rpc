@@ -16,6 +16,7 @@ type Asset struct {
 }
 
 type Vault struct {
+	Name      string    `json:"name"`
 	Members   []string  `json:"members"`
 	Threshold uint8     `json:"threshold"`
 	Offset    uint64    `json:"offset"`
