@@ -114,12 +114,11 @@ func listSnapshots(txn *badger.Txn, members []string, threshold uint8, assetID s
 	}
 
 	ts := offset.UnixNano()
-	if ts > 0 {
-		it.Seek(buildIndexKey(prefix, ts))
-	} else {
-		it.Seek(prefix)
+	if ts <= 0 {
+		ts = time.Now().UnixNano()
 	}
 
+	it.Seek(buildIndexKey(prefix, ts))
 	snapshots := []*Snapshot{}
 	for ; it.ValidForPrefix(prefix) && len(snapshots) < limit; it.Next() {
 		key := it.Item().Key()

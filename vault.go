@@ -25,10 +25,12 @@ type Vault struct {
 }
 
 type Snapshot struct {
-	ID        string          `json:"id"`
-	CreatedAt time.Time       `json:"created_at"`
-	AssetID   string          `json:"asset_id"`
-	Amount    decimal.Decimal `json:"amount"`
-	Opponent  string          `json:"opponent"`
-	Memo      string          `json:"memo"`
+	ID              string          `json:"id"`
+	CreatedAt       time.Time       `json:"created_at"`
+	AssetID         string          `json:"asset_id"`
+	Amount          decimal.Decimal `json:"amount"`
+	Opponent        string          `json:"opponent"`
+	Memo            string          `json:"memo"`
+	TransactionHash string          `json:"transaction_hash"`
+	OutputIndex     uint8           `json:"output_index"`
 }

@@ -162,10 +162,12 @@ func getNewOffset(a, b uint64) uint64 {
 
 func outputToSnapshot(output *mixin.SafeUtxo) *Snapshot {
 	s := &Snapshot{
-		ID:        output.OutputID,
-		CreatedAt: output.CreatedAt,
-		AssetID:   output.AssetID,
-		Amount:    output.Amount,
+		ID:              output.OutputID,
+		CreatedAt:       output.CreatedAt,
+		AssetID:         output.AssetID,
+		Amount:          output.Amount,
+		TransactionHash: output.TransactionHash.String(),
+		OutputIndex:     output.OutputIndex,
 	}
 
 	if b, err := hex.DecodeString(output.Extra); err == nil {
@@ -181,10 +183,11 @@ func outputToSnapshot(output *mixin.SafeUtxo) *Snapshot {
 
 func requestToSnapshot(req *mixin.SafeMultisigRequest) *Snapshot {
 	s := &Snapshot{
-		ID:        req.RequestID,
-		CreatedAt: req.CreatedAt,
-		AssetID:   req.AssetID,
-		Amount:    req.Amount.Neg(),
+		ID:              req.RequestID,
+		CreatedAt:       req.CreatedAt,
+		AssetID:         req.AssetID,
+		Amount:          req.Amount.Neg(),
+		TransactionHash: req.TransactionHash,
 	}
 
 	if b, err := hex.DecodeString(req.Extra); err == nil {

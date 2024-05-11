@@ -176,6 +176,7 @@ func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
 	txn := s.db.NewTransaction(false)
 	defer txn.Discard()
 
+	slog.Info("list snapshots", "members", members, "threshold", threshold, "asset", assetID, "since", since, "limit", limit)
 	snapshots, err := listSnapshots(txn, members, threshold, assetID, since, limit)
 	if err != nil {
 		slog.Error("listSnapshots", "error", err)
