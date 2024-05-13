@@ -8,7 +8,6 @@ require (
 	github.com/fox-one/mixin-sdk-go/v2 v2.0.6
 	github.com/go-chi/chi/v5 v5.0.12
 	github.com/google/uuid v1.6.0
-	github.com/pandodao/generic v1.0.1
 	github.com/pandodao/mtg v1.0.8
 	github.com/shopspring/decimal v1.3.1
 	github.com/spf13/cast v1.6.0
