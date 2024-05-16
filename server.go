@@ -2,26 +2,43 @@ package cowallet
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
-	"golang.org/x/sync/errgroup"
+	"github.com/fox-one/mixin-sdk-go/v2"
+	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
+	"github.com/shopspring/decimal"
 )
 
-type Server struct {
-	db *badger.DB
+type Config struct {
+	SpendKey   mixinnet.Key
+	PayAssetID string
+	PayAmount  decimal.Decimal
 }
 
-func NewServer(db *badger.DB) Server {
-	return Server{db: db}
+type Server struct {
+	db     *badger.DB
+	client *mixin.Client
+	cfg    Config
+}
+
+func NewServer(
+	db *badger.DB,
+	client *mixin.Client,
+	cfg Config,
+) Server {
+	return Server{
+		db:     db,
+		client: client,
+		cfg:    cfg,
+	}
 }
 
 func (s *Server) Run(ctx context.Context) error {
 	dur := time.Minute
 
 	for {
-		_ = s.run(ctx)
+		// _ = s.run(ctx)
 
 		select {
 		case <-ctx.Done():
@@ -29,24 +46,4 @@ func (s *Server) Run(ctx context.Context) error {
 		case <-time.After(dur):
 		}
 	}
-}
-
-func (s *Server) run(ctx context.Context) error {
-	jobs, err := ListJobs(s.db)
-	if err != nil {
-		slog.Error("ListJobs", slog.Any("err", err))
-		return err
-	}
-
-	var g errgroup.Group
-	g.SetLimit(10)
-
-	for idx := range jobs {
-		job := jobs[idx]
-		g.Go(func() error {
-			return handleJob(ctx, s.db, job)
-		})
-	}
-
-	return g.Wait()
 }

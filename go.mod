@@ -16,7 +16,10 @@ require (
 	golang.org/x/sync v0.6.0
 )
 
-require golang.org/x/exp v0.0.0-20220218215828-6cf2b201936e // indirect
+require (
+	github.com/rs/xid v1.5.0 // indirect
+	golang.org/x/exp v0.0.0-20220218215828-6cf2b201936e // indirect
+)
 
 require (
 	filippo.io/edwards25519 v1.0.0 // indirect

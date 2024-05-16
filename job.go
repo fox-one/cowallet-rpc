@@ -11,6 +11,7 @@ import (
 	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
 	"github.com/zyedidia/generic/mapset"
+	"golang.org/x/sync/errgroup"
 )
 
 type Job struct {
@@ -18,6 +19,38 @@ type Job struct {
 	User      *User     `json:"user"`
 	Members   []string  `json:"members"`
 	Threshold uint8     `json:"threshold"`
+}
+
+func (s *Server) HandlePendingJobs(ctx context.Context) error {
+	for {
+		_ = s.handlePendingJobs(ctx)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func (s *Server) handlePendingJobs(ctx context.Context) error {
+	jobs, err := ListJobs(s.db)
+	if err != nil {
+		slog.Error("ListJobs", slog.Any("err", err))
+		return err
+	}
+
+	var g errgroup.Group
+	g.SetLimit(10)
+
+	for idx := range jobs {
+		job := jobs[idx]
+		g.Go(func() error {
+			return handleJob(ctx, s.db, job)
+		})
+	}
+
+	return g.Wait()
 }
 
 func handleJob(ctx context.Context, db *badger.DB, job *Job) error {

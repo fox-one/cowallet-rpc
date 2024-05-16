@@ -16,13 +16,19 @@ import (
 )
 
 var cfg struct {
-	dbPath string
-	port   int
+	keystorePath string
+	dbPath       string
+	port         int
+	payAsset     string
+	payAmount    float64
 }
 
 func init() {
 	flag.StringVar(&cfg.dbPath, "db", "cowallet.db", "database path")
+	flag.StringVar(&cfg.keystorePath, "key", "key.json", "keystore path")
 	flag.IntVar(&cfg.port, "port", 8080, "http port")
+	flag.StringVar(&cfg.payAsset, "asset", "31d2ea9c-95eb-3355-b65b-ba096853bc18", "pay asset id")
+	flag.Float64Var(&cfg.payAmount, "amount", 10, "pay amount per month")
 
 	flag.Parse()
 }

@@ -3,6 +3,7 @@ package cowallet
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
@@ -22,6 +23,7 @@ type Vault struct {
 	Offset    uint64    `json:"offset"`
 	Assets    []*Asset  `json:"assets"`
 	UpdatedAt time.Time `json:"updated_at"`
+	ExpiredAt time.Time `json:"expired_at"`
 }
 
 type Snapshot struct {
@@ -33,4 +35,28 @@ type Snapshot struct {
 	Memo            string          `json:"memo"`
 	TransactionHash string          `json:"transaction_hash"`
 	OutputIndex     uint8           `json:"output_index"`
+}
+
+type Address struct {
+	Members   []string  `json:"members"`
+	Threshold uint8     `json:"threshold"`
+	Label     string    `json:"label"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type Renew struct {
+	ID        uuid.UUID       `json:"id"`
+	CreatedAt time.Time       `json:"created_at"`
+	Members   []string        `json:"members"`
+	Threshold uint8           `json:"threshold"`
+	Sender    uuid.UUID       `json:"sender"`
+	Asset     uuid.UUID       `json:"asset"`
+	Amount    decimal.Decimal `json:"amount"`
+	Period    int64           `json:"period"` // in seconds
+}
+
+type Log struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	Raw       []byte    `json:"raw"`
 }

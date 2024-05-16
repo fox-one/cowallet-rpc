@@ -15,6 +15,10 @@ var (
 	vaultPrefix    = []byte("v:")
 	jobPrefix      = []byte("j:")
 	snapshotPrefix = []byte("s:")
+	propertyPrefix = []byte("p:")
+	logPrefix      = []byte("l:")
+	addressPrefix  = []byte("a:")
+	orderPrefix    = []byte("o:")
 )
 
 func hashMembers(ids []string) mixinnet.Hash {
@@ -247,4 +251,44 @@ func SaveVault(db *badger.DB, vault *Vault) error {
 	}
 
 	return txn.Commit()
+}
+
+func readProperty(txn *badger.Txn, key string, val any) error {
+	item, err := txn.Get(buildIndexKey(propertyPrefix, key))
+	if err != nil {
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return nil
+		}
+	}
+
+	return item.Value(func(b []byte) error {
+		return json.Unmarshal(b, val)
+	})
+}
+
+func ReadProperty(db *badger.DB, key string, val any) error {
+	txn := db.NewTransaction(false)
+	defer txn.Discard()
+
+	return readProperty(txn, key, val)
+}
+
+func saveProperty(txn *badger.Txn, key string, val any) error {
+	b, err := json.Marshal(val)
+	if err != nil {
+		return err
+	}
+
+	return txn.Set(buildIndexKey(propertyPrefix, key), b)
+}
+
+func SaveProperty(db *badger.DB, key string, val any) error {
+	txn := db.NewTransaction(true)
+	defer txn.Discard()
+
+	return saveProperty(txn, key, val)
+}
+
+func createLog(txn *badger.Txn, id uuid.UUID, action uint8, args []any) error {
+
 }
