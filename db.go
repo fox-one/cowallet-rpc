@@ -9,6 +9,7 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
 	"github.com/google/uuid"
+	"github.com/pandodao/mtg/mtgpack"
 )
 
 var (
@@ -289,6 +290,57 @@ func SaveProperty(db *badger.DB, key string, val any) error {
 	return saveProperty(txn, key, val)
 }
 
-func createLog(txn *badger.Txn, id uuid.UUID, action uint8, args []any) error {
+func createLog(txn *badger.Txn, id uuid.UUID, args []any) error {
+	enc := mtgpack.NewEncoder()
+	if err := enc.EncodeValues(args); err != nil {
+		return err
+	}
 
+	v := Log{
+		ID:        id,
+		CreatedAt: time.Now(),
+		Raw:       enc.Bytes(),
+	}
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	key := buildIndexKey(logPrefix, id)
+	return txn.Set(key, b)
+}
+
+func deleteLog(txn *badger.Txn, id uuid.UUID) error {
+	key := buildIndexKey(logPrefix, id)
+	return txn.Delete(key)
+}
+
+func listLogs(txn *badger.Txn, limit int) ([]*Log, error) {
+	opts := badger.DefaultIteratorOptions
+	opts.PrefetchSize = limit
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	var logs []*Log
+	for it.Seek(logPrefix); it.ValidForPrefix(logPrefix) && len(logs) < limit; it.Next() {
+		var log Log
+
+		if err := it.Item().Value(func(b []byte) error {
+			return json.Unmarshal(b, &log)
+		}); err != nil {
+			return nil, err
+		}
+
+		logs = append(logs, &log)
+	}
+
+	return logs, nil
+}
+
+func ListLogs(db *badger.DB, limit int) ([]*Log, error) {
+	txn := db.NewTransaction(false)
+	defer txn.Discard()
+
+	return listLogs(txn, limit)
 }
