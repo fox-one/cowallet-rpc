@@ -13,27 +13,31 @@ import (
 )
 
 var (
-	vaultPrefix    = []byte("v:")
-	jobPrefix      = []byte("j:")
-	snapshotPrefix = []byte("s:")
-	propertyPrefix = []byte("p:")
-	logPrefix      = []byte("l:")
-	addressPrefix  = []byte("a:")
-	orderPrefix    = []byte("o:")
+	vaultPrefix                   = []byte("v:")
+	jobPrefix                     = []byte("j:")
+	snapshotPrefix                = []byte("s:")
+	snapshotVaultIndexPrefix      = []byte("sv:")
+	snapshotVaultAssetIndexPrefix = []byte("sva:")
+	propertyPrefix                = []byte("p:")
+	logPrefix                     = []byte("l:")
+	addressPrefix                 = []byte("a:")
+	renewPrefix                   = []byte("r:")
+	renewVaultIndexPrefix         = []byte("rv:")
 )
 
-func hashMembers(ids []string) mixinnet.Hash {
+func hashMembers(ids []string, threshold uint8) uuid.UUID {
 	sort.Strings(ids)
 	var in string
 	for _, id := range ids {
 		in = in + id
 	}
 
-	return mixinnet.NewHash([]byte(in))
+	b := buildIndexKey(vaultPrefix, mixinnet.NewHash([]byte(in)), threshold)
+	return uuid.NewSHA1(uuid.NameSpaceOID, b)
 }
 
 func saveSnapshot(txn *badger.Txn, s *Snapshot, members []string, threshold uint8) error {
-	pk := buildIndexKey(snapshotPrefix, uuid.MustParse(s.ID))
+	pk := buildIndexKey(snapshotPrefix, s.ID)
 
 	b, err := json.Marshal(s)
 	if err != nil {
@@ -47,11 +51,10 @@ func saveSnapshot(txn *badger.Txn, s *Snapshot, members []string, threshold uint
 	// index 1
 	{
 		key := buildIndexKey(
-			snapshotPrefix,
-			hashMembers(members),
-			threshold,
+			snapshotVaultIndexPrefix,
+			hashMembers(members, threshold),
 			s.CreatedAt.UnixNano(),
-			uuid.MustParse(s.ID),
+			s.ID,
 		)
 
 		if err := txn.Set(key, nil); err != nil {
@@ -62,12 +65,11 @@ func saveSnapshot(txn *badger.Txn, s *Snapshot, members []string, threshold uint
 	// index with asset
 	{
 		key := buildIndexKey(
-			snapshotPrefix,
-			hashMembers(members),
-			threshold,
+			snapshotVaultAssetIndexPrefix,
+			hashMembers(members, threshold),
 			uuid.MustParse(s.AssetID),
 			s.CreatedAt.UnixNano(),
-			uuid.MustParse(s.ID),
+			s.ID,
 		)
 
 		if err := txn.Set(key, nil); err != nil {
@@ -103,11 +105,8 @@ func listSnapshots(txn *badger.Txn, members []string, threshold uint8, assetID s
 	it := txn.NewIterator(opts)
 	defer it.Close()
 
-	prefix := buildIndexKey(
-		snapshotPrefix,
-		hashMembers(members),
-		threshold,
-	)
+	prefix := snapshotVaultIndexPrefix
+	args := []any{hashMembers(members, threshold)}
 
 	if assetID != "" {
 		asset, err := uuid.Parse(assetID)
@@ -115,8 +114,11 @@ func listSnapshots(txn *badger.Txn, members []string, threshold uint8, assetID s
 			return nil, err
 		}
 
-		prefix = buildIndexKey(prefix, asset)
+		prefix = snapshotVaultAssetIndexPrefix
+		args = append(args, asset)
 	}
+
+	prefix = buildIndexKey(prefix, args...)
 
 	ts := offset.UnixNano()
 	if ts <= 0 {
@@ -145,8 +147,7 @@ func listSnapshots(txn *badger.Txn, members []string, threshold uint8, assetID s
 func saveJob(txn *badger.Txn, job *Job, ttl time.Duration) error {
 	pk := buildIndexKey(
 		jobPrefix,
-		hashMembers(job.Members),
-		job.Threshold,
+		hashMembers(job.Members, job.Threshold),
 	)
 
 	b, err := json.Marshal(job)
@@ -194,8 +195,7 @@ func ListJobs(db *badger.DB) ([]*Job, error) {
 func saveVault(txn *badger.Txn, vault *Vault) error {
 	pk := buildIndexKey(
 		vaultPrefix,
-		hashMembers(vault.Members),
-		vault.Threshold,
+		hashMembers(vault.Members, vault.Threshold),
 	)
 
 	b, err := json.Marshal(vault)
@@ -210,8 +210,7 @@ func saveVault(txn *badger.Txn, vault *Vault) error {
 func findVault(txn *badger.Txn, members []string, threshold uint8) (*Vault, error) {
 	pk := buildIndexKey(
 		vaultPrefix,
-		hashMembers(members),
-		threshold,
+		hashMembers(members, threshold),
 	)
 
 	item, err := txn.Get(pk)
@@ -290,7 +289,7 @@ func SaveProperty(db *badger.DB, key string, val any) error {
 	return saveProperty(txn, key, val)
 }
 
-func createLog(txn *badger.Txn, id uuid.UUID, args []any) error {
+func createLog(txn *badger.Txn, id uuid.UUID, args ...any) error {
 	enc := mtgpack.NewEncoder()
 	if err := enc.EncodeValues(args); err != nil {
 		return err
@@ -343,4 +342,74 @@ func ListLogs(db *badger.DB, limit int) ([]*Log, error) {
 	defer txn.Discard()
 
 	return listLogs(txn, limit)
+}
+
+func saveRenew(txn *badger.Txn, r *Renew) error {
+	pk := buildIndexKey(renewPrefix, r.ID)
+
+	b, err := json.Marshal(r)
+	if err != nil {
+		panic(err)
+	}
+
+	if err := txn.Set(pk, b); err != nil {
+		return err
+	}
+
+	// index
+	{
+		key := buildIndexKey(
+			renewVaultIndexPrefix,
+			hashMembers(r.Members, r.Threshold),
+			r.CreatedAt.UnixNano(),
+			r.ID,
+		)
+
+		if err := txn.Set(key, nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func findRenew(txn *badger.Txn, id uuid.UUID) (*Renew, error) {
+	pk := buildIndexKey(renewPrefix, id)
+	item, err := txn.Get(pk)
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := item.ValueCopy(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var r Renew
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+
+	return &r, nil
+}
+
+func saveAddress(txn *badger.Txn, v Address) error {
+	v.UpdatedAt = time.Now()
+
+	pk := buildIndexKey(addressPrefix, v.UserID, hashMembers(v.Members, v.Threshold))
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	if err := txn.Set(pk, b); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func deleteAddress(txn *badger.Txn, user uuid.UUID, members []string, threshold uint8) error {
+	pk := buildIndexKey(addressPrefix, user, hashMembers(members, threshold))
+	return txn.Delete(pk)
 }

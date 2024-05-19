@@ -44,6 +44,12 @@ func (s *Server) listPendingLogs(ctx context.Context) error {
 }
 
 func (s *Server) handleLog(ctx context.Context, log *Log) error {
+	if _, err := s.client.SafeReadTransactionRequest(ctx, log.ID.String()); err == nil {
+		return nil
+	} else if !mixin.IsErrorCodes(err, mixin.EndpointNotFound) {
+		return err
+	}
+
 	opt := mixin.SafeListUtxoOption{
 		Members:   []string{s.client.ClientID},
 		Threshold: 1,

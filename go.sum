@@ -111,6 +111,8 @@ github.com/onsi/ginkgo v1.7.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+W
 github.com/onsi/gomega v1.4.3/go.mod h1:ex+gbHU/CVuBBDIJjb2X0qEXbFg53c61hWP/1CpauHY=
 github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c h1:rp5dCmg/yLR3mgFuSOe4oEnDDmGLROTvMragMUXpTQw=
 github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c/go.mod h1:X07ZCGwUbLaax7L0S3Tw4hpejzu63ZrrQiUe6W0hcy0=
+github.com/pandodao/generic v1.0.3 h1:lQocZwtlVkeuYzW4+voYMkOqhb4/fjZVWnoWdNo9RPw=
+github.com/pandodao/generic v1.0.3/go.mod h1:IB6gEKkE5QF4n2NC6CUDHq0wK6qOOIsYOTZlhdeOFEk=
 github.com/pandodao/mtg v1.0.8 h1:6up2r1QWadSBG7H6xS6n8cfW+ZaGA9kjqr+xEztFUGE=
 github.com/pandodao/mtg v1.0.8/go.mod h1:7gvsA5CfBFGGhYpoGQtaVvKP9TkR1z+e2OaM/5vm+kw=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=

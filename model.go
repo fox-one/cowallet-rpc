@@ -27,7 +27,7 @@ type Vault struct {
 }
 
 type Snapshot struct {
-	ID              string          `json:"id"`
+	ID              uuid.UUID       `json:"id"`
 	CreatedAt       time.Time       `json:"created_at"`
 	AssetID         string          `json:"asset_id"`
 	Amount          decimal.Decimal `json:"amount"`
@@ -38,6 +38,7 @@ type Snapshot struct {
 }
 
 type Address struct {
+	UserID    uuid.UUID `json:"user_id"`
 	Members   []string  `json:"members"`
 	Threshold uint8     `json:"threshold"`
 	Label     string    `json:"label"`
@@ -49,8 +50,8 @@ type Renew struct {
 	CreatedAt time.Time       `json:"created_at"`
 	Members   []string        `json:"members"`
 	Threshold uint8           `json:"threshold"`
-	Sender    uuid.UUID       `json:"sender"`
-	Asset     uuid.UUID       `json:"asset"`
+	Sender    string          `json:"sender"`
+	Asset     string          `json:"asset"`
 	Amount    decimal.Decimal `json:"amount"`
 	Period    int64           `json:"period"` // in seconds
 }

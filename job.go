@@ -10,6 +10,7 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
+	"github.com/google/uuid"
 	"github.com/zyedidia/generic/mapset"
 	"golang.org/x/sync/errgroup"
 )
@@ -195,7 +196,7 @@ func getNewOffset(a, b uint64) uint64 {
 
 func outputToSnapshot(output *mixin.SafeUtxo) *Snapshot {
 	s := &Snapshot{
-		ID:              output.OutputID,
+		ID:              uuid.MustParse(output.OutputID),
 		CreatedAt:       output.CreatedAt,
 		AssetID:         output.AssetID,
 		Amount:          output.Amount,
@@ -216,7 +217,7 @@ func outputToSnapshot(output *mixin.SafeUtxo) *Snapshot {
 
 func requestToSnapshot(req *mixin.SafeMultisigRequest) *Snapshot {
 	s := &Snapshot{
-		ID:              req.RequestID,
+		ID:              uuid.MustParse(req.RequestID),
 		CreatedAt:       req.CreatedAt,
 		AssetID:         req.AssetID,
 		Amount:          req.Amount.Neg(),

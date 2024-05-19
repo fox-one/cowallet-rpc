@@ -41,6 +41,7 @@ require (
 	github.com/klauspost/compress v1.12.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
+	github.com/pandodao/generic v1.0.3
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rs/cors v1.11.0
 	github.com/vmihailenco/tagparser v0.1.2 // indirect
