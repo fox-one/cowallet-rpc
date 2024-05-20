@@ -160,6 +160,10 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 		}
 	}
 
+	if offset <= vault.Offset {
+		return nil
+	}
+
 	vault.Assets = vault.Assets[0:0]
 	for _, asset := range assets {
 		vault.Assets = append(vault.Assets, asset)

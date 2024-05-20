@@ -20,6 +20,7 @@ type Server struct {
 	db     *badger.DB
 	client *mixin.Client
 	cfg    Config
+	seq    *badger.Sequence
 }
 
 func NewServer(
@@ -27,8 +28,14 @@ func NewServer(
 	client *mixin.Client,
 	cfg Config,
 ) Server {
+	seq, err := db.GetSequence([]byte("cowallet:sequence"), 1024)
+	if err != nil {
+		panic(err)
+	}
+
 	return Server{
 		db:     db,
+		seq:    seq,
 		client: client,
 		cfg:    cfg,
 	}

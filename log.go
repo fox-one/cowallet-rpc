@@ -8,11 +8,37 @@ import (
 	"time"
 
 	"github.com/fox-one/mixin-sdk-go/v2"
+	"github.com/pandodao/mtg/mtgpack"
 )
 
 const (
 	spendOffsetProperty = "spend_offset"
 )
+
+func (s *Server) NextLog(action uint8, trace string, args ...any) (*Log, error) {
+	seq, err := s.seq.Next()
+	if err != nil {
+		return nil, err
+	}
+
+	enc := mtgpack.NewEncoder()
+	if err := enc.EncodeUint8(action); err != nil {
+		return nil, err
+	}
+
+	if err := enc.EncodeValues(args...); err != nil {
+		return nil, err
+	}
+
+	v := &Log{
+		Seq:       seq,
+		CreatedAt: time.Now(),
+		TraceID:   trace,
+		Memo:      string(enc.Bytes()),
+	}
+
+	return v, nil
+}
 
 func (s *Server) ListPendingLogs(ctx context.Context) error {
 	for {
@@ -44,7 +70,7 @@ func (s *Server) listPendingLogs(ctx context.Context) error {
 }
 
 func (s *Server) handleLog(ctx context.Context, log *Log) error {
-	if _, err := s.client.SafeReadTransactionRequest(ctx, log.ID.String()); err == nil {
+	if _, err := s.client.SafeReadTransactionRequest(ctx, log.TraceID); err == nil {
 		return nil
 	} else if !mixin.IsErrorCodes(err, mixin.EndpointNotFound) {
 		return err
@@ -75,14 +101,9 @@ func (s *Server) handleLog(ctx context.Context, log *Log) error {
 
 	utxo := outputs[0]
 	b := mixin.NewSafeTransactionBuilder([]*mixin.SafeUtxo{utxo})
-	b.Hint = log.ID.String()
-	b.Memo = string(log.Raw)
-	receiver := &mixin.TransactionOutput{
-		Address: mixin.RequireNewMixAddress(opt.Members, opt.Threshold),
-		Amount:  utxo.Amount,
-	}
-
-	tx, err := s.client.MakeTransaction(ctx, b, []*mixin.TransactionOutput{receiver})
+	b.Hint = log.TraceID
+	b.Memo = log.Memo
+	tx, err := s.client.MakeTransaction(ctx, b, nil)
 	if err != nil {
 		return fmt.Errorf("make transaction failed: %w", err)
 	}
@@ -94,7 +115,7 @@ func (s *Server) handleLog(ctx context.Context, log *Log) error {
 
 	// prepare transaction
 	req, err := s.client.SafeCreateTransactionRequest(ctx, &mixin.SafeTransactionRequestInput{
-		RequestID:      log.ID.String(),
+		RequestID:      log.TraceID,
 		RawTransaction: raw,
 	})
 
@@ -114,7 +135,7 @@ func (s *Server) handleLog(ctx context.Context, log *Log) error {
 
 	// submit transaction
 	if _, err := s.client.SafeSubmitTransactionRequest(ctx, &mixin.SafeTransactionRequestInput{
-		RequestID:      log.ID.String(),
+		RequestID:      log.TraceID,
 		RawTransaction: hex.EncodeToString(data),
 	}); err != nil {
 		return fmt.Errorf("submit transaction failed: %w", err)
@@ -123,7 +144,7 @@ func (s *Server) handleLog(ctx context.Context, log *Log) error {
 	txn := s.db.NewTransaction(true)
 	defer txn.Discard()
 
-	if err := deleteLog(txn, log.ID); err != nil {
+	if err := deleteLog(txn, log.Seq); err != nil {
 		return err
 	}
 

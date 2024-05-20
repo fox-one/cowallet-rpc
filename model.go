@@ -23,7 +23,6 @@ type Vault struct {
 	Offset    uint64    `json:"offset"`
 	Assets    []*Asset  `json:"assets"`
 	UpdatedAt time.Time `json:"updated_at"`
-	ExpiredAt time.Time `json:"expired_at"`
 }
 
 type Snapshot struct {
@@ -47,6 +46,7 @@ type Address struct {
 
 type Renew struct {
 	ID        uuid.UUID       `json:"id"`
+	Sequence  uint64          `json:"sequence"`
 	CreatedAt time.Time       `json:"created_at"`
 	Members   []string        `json:"members"`
 	Threshold uint8           `json:"threshold"`
@@ -54,10 +54,13 @@ type Renew struct {
 	Asset     string          `json:"asset"`
 	Amount    decimal.Decimal `json:"amount"`
 	Period    int64           `json:"period"` // in seconds
+	From      time.Time       `json:"from"`
+	To        time.Time       `json:"to"`
 }
 
 type Log struct {
-	ID        uuid.UUID `json:"id"`
+	Seq       uint64    `json:"seq"`
 	CreatedAt time.Time `json:"created_at"`
-	Raw       []byte    `json:"raw"`
+	TraceID   string    `json:"trace_id"`
+	Memo      string    `json:"memo"`
 }

@@ -25,38 +25,10 @@ func (s *Server) handleOutput(_ context.Context, txn *badger.Txn, output *mixin.
 		return s.renewVault(txn, output, addr)
 	}
 
-	// system log
-	if len(output.Senders) == 1 && output.Senders[0] == s.client.ClientID {
-
-	}
-
 	return nil
 }
 
 func (s *Server) renewVault(txn *badger.Txn, output *mixin.SafeUtxo, addr *mixin.MixAddress) error {
-	id := uuid.NewSHA1(
-		uuid.MustParse(output.RequestID),
-		[]byte("renew"),
-	)
-
-	r := &Renew{
-		ID:        id,
-		CreatedAt: output.CreatedAt,
-		Members:   addr.Members(),
-		Threshold: addr.Threshold,
-		Asset:     output.AssetID,
-		Amount:    output.Amount,
-	}
-
-	if len(output.Senders) > 0 {
-		sender := mixin.RequireNewMainnetMixAddress(output.Senders, output.SendersThreshold)
-		r.Sender = sender.String()
-	}
-
-	if err := saveRenew(txn, r); err != nil {
-		return err
-	}
-
 	if s.cfg.PayAssetID != output.AssetID {
 		return nil
 	}
@@ -66,6 +38,36 @@ func (s *Server) renewVault(txn *badger.Txn, output *mixin.SafeUtxo, addr *mixin
 	dur := base.Mul(output.Amount).Div(s.cfg.PayAmount).IntPart()
 	if dur <= 0 {
 		return nil
+	}
+
+	v, err := findVault(txn, addr.Members(), addr.Threshold)
+	if err != nil {
+		return err
+	}
+
+	v.ExpiredAt = maxDate(v.ExpiredAt, output.CreatedAt).Add(time.Duration(dur) * time.Second)
+	if err := saveVault(txn, v); err != nil {
+		return err
+	}
+
+	r := &Renew{
+		ID:        uuid.MustParse(output.RequestID),
+		CreatedAt: output.CreatedAt,
+		Sequence:  output.Sequence,
+		Members:   addr.Members(),
+		Threshold: addr.Threshold,
+		Asset:     output.AssetID,
+		Amount:    output.Amount,
+		Period:    dur,
+	}
+
+	if len(output.Senders) > 0 {
+		sender := mixin.RequireNewMainnetMixAddress(output.Senders, output.SendersThreshold)
+		r.Sender = sender.String()
+	}
+
+	if err := saveRenew(txn, r); err != nil {
+		return err
 	}
 
 	return createLog(
@@ -118,7 +120,6 @@ func (s *Server) handleSystemCommand(txn *badger.Txn, output *mixin.SafeUtxo, b 
 			return err
 		}
 
-		
 	}
 }
 

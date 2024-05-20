@@ -9,7 +9,6 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
 	"github.com/google/uuid"
-	"github.com/pandodao/mtg/mtgpack"
 )
 
 var (
@@ -145,16 +144,12 @@ func listSnapshots(txn *badger.Txn, members []string, threshold uint8, assetID s
 }
 
 func saveJob(txn *badger.Txn, job *Job, ttl time.Duration) error {
-	pk := buildIndexKey(
-		jobPrefix,
-		hashMembers(job.Members, job.Threshold),
-	)
-
 	b, err := json.Marshal(job)
 	if err != nil {
 		panic(err)
 	}
 
+	pk := buildIndexKey(jobPrefix, hashMembers(job.Members, job.Threshold))
 	e := badger.NewEntry(pk, b).WithTTL(ttl)
 	return txn.SetEntry(e)
 }
@@ -193,25 +188,18 @@ func ListJobs(db *badger.DB) ([]*Job, error) {
 }
 
 func saveVault(txn *badger.Txn, vault *Vault) error {
-	pk := buildIndexKey(
-		vaultPrefix,
-		hashMembers(vault.Members, vault.Threshold),
-	)
-
 	b, err := json.Marshal(vault)
 	if err != nil {
 		panic(err)
 	}
 
+	pk := buildIndexKey(vaultPrefix, hashMembers(vault.Members, vault.Threshold))
 	e := badger.NewEntry(pk, b)
 	return txn.SetEntry(e)
 }
 
 func findVault(txn *badger.Txn, members []string, threshold uint8) (*Vault, error) {
-	pk := buildIndexKey(
-		vaultPrefix,
-		hashMembers(members, threshold),
-	)
+	pk := buildIndexKey(vaultPrefix, hashMembers(members, threshold))
 
 	item, err := txn.Get(pk)
 	if err != nil {
@@ -242,16 +230,16 @@ func FindVault(db *badger.DB, members []string, threshold uint8) (*Vault, error)
 	return findVault(txn, members, threshold)
 }
 
-func SaveVault(db *badger.DB, vault *Vault) error {
-	txn := db.NewTransaction(true)
-	defer txn.Discard()
+// func SaveVault(db *badger.DB, vault *Vault) error {
+// 	txn := db.NewTransaction(true)
+// 	defer txn.Discard()
 
-	if err := saveVault(txn, vault); err != nil {
-		return err
-	}
+// 	if err := saveVault(txn, vault); err != nil {
+// 		return err
+// 	}
 
-	return txn.Commit()
-}
+// 	return txn.Commit()
+// }
 
 func readProperty(txn *badger.Txn, key string, val any) error {
 	item, err := txn.Get(buildIndexKey(propertyPrefix, key))
@@ -289,29 +277,18 @@ func SaveProperty(db *badger.DB, key string, val any) error {
 	return saveProperty(txn, key, val)
 }
 
-func createLog(txn *badger.Txn, id uuid.UUID, args ...any) error {
-	enc := mtgpack.NewEncoder()
-	if err := enc.EncodeValues(args); err != nil {
-		return err
-	}
-
-	v := Log{
-		ID:        id,
-		CreatedAt: time.Now(),
-		Raw:       enc.Bytes(),
-	}
-
-	b, err := json.Marshal(v)
+func saveLog(txn *badger.Txn, log *Log) error {
+	b, err := json.Marshal(log)
 	if err != nil {
 		return err
 	}
 
-	key := buildIndexKey(logPrefix, id)
+	key := buildIndexKey(logPrefix, log.Seq)
 	return txn.Set(key, b)
 }
 
-func deleteLog(txn *badger.Txn, id uuid.UUID) error {
-	key := buildIndexKey(logPrefix, id)
+func deleteLog(txn *badger.Txn, seq uint64) error {
+	key := buildIndexKey(logPrefix, seq)
 	return txn.Delete(key)
 }
 
@@ -412,4 +389,33 @@ func saveAddress(txn *badger.Txn, v Address) error {
 func deleteAddress(txn *badger.Txn, user uuid.UUID, members []string, threshold uint8) error {
 	pk := buildIndexKey(addressPrefix, user, hashMembers(members, threshold))
 	return txn.Delete(pk)
+}
+
+func listAddress(txn *badger.Txn, user uuid.UUID) ([]Address, error) {
+	opt := badger.DefaultIteratorOptions
+	it := txn.NewIterator(opt)
+	defer it.Close()
+
+	var outputs []Address
+
+	prefix := buildIndexKey(addressPrefix, user)
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		var v Address
+		if err := it.Item().Value(func(b []byte) error {
+			return json.Unmarshal(b, &v)
+		}); err != nil {
+			return nil, err
+		}
+
+		outputs = append(outputs, v)
+	}
+
+	return outputs, nil
+}
+
+func ListAddress(db *badger.DB, user uuid.UUID) ([]Address, error) {
+	txn := db.NewTransaction(false)
+	defer txn.Discard()
+
+	return listAddress(txn, user)
 }
