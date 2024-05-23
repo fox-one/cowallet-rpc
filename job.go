@@ -160,12 +160,16 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 		}
 	}
 
+	if offset <= vault.Offset && time.Since(vault.UpdatedAt) < time.Minute {
+		return nil
+	}
+
 	vault.Assets = vault.Assets[0:0]
 	for _, asset := range assets {
 		vault.Assets = append(vault.Assets, asset)
 	}
 
-	vault.Offset = getNewOffset(a, b)
+	vault.Offset = max(getNewOffset(a, b), vault.Offset)
 	vault.UpdatedAt = time.Now()
 
 	txn := db.NewTransaction(true)
