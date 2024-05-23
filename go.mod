@@ -16,10 +16,7 @@ require (
 	golang.org/x/sync v0.6.0
 )
 
-require (
-	github.com/rs/xid v1.5.0 // indirect
-	golang.org/x/exp v0.0.0-20220218215828-6cf2b201936e // indirect
-)
+require golang.org/x/exp v0.0.0-20220218215828-6cf2b201936e // indirect
 
 require (
 	filippo.io/edwards25519 v1.0.0 // indirect
@@ -41,7 +38,6 @@ require (
 	github.com/klauspost/compress v1.12.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
-	github.com/pandodao/generic v1.0.3
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rs/cors v1.11.0
 	github.com/vmihailenco/tagparser v0.1.2 // indirect
