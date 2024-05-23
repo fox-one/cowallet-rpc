@@ -2,12 +2,12 @@ package cowallet
 
 import (
 	"context"
-	"time"
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
 	"github.com/shopspring/decimal"
+	"golang.org/x/sync/errgroup"
 )
 
 type Config struct {
@@ -20,7 +20,6 @@ type Server struct {
 	db     *badger.DB
 	client *mixin.Client
 	cfg    Config
-	seq    *badger.Sequence
 }
 
 func NewServer(
@@ -28,29 +27,23 @@ func NewServer(
 	client *mixin.Client,
 	cfg Config,
 ) Server {
-	seq, err := db.GetSequence([]byte("cowallet:sequence"), 1024)
-	if err != nil {
-		panic(err)
-	}
-
 	return Server{
 		db:     db,
-		seq:    seq,
 		client: client,
 		cfg:    cfg,
 	}
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	dur := time.Minute
+	var g errgroup.Group
 
-	for {
-		// _ = s.run(ctx)
+	g.Go(func() error {
+		return s.LoopOutputs(ctx)
+	})
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(dur):
-		}
-	}
+	g.Go(func() error {
+		return s.HandlePendingJobs(ctx)
+	})
+
+	return g.Wait()
 }

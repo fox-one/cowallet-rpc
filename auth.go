@@ -2,6 +2,8 @@ package cowallet
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -15,6 +17,23 @@ func extractBearerToken(r *http.Request) string {
 	return strings.TrimPrefix(token, "Bearer ")
 }
 
+func clientFromToken(token string) (*mixin.Client, error) {
+	r := strings.NewReader(token)
+
+	var auth mixin.OauthKeystore
+	if err := json.NewDecoder(r).Decode(&auth); err == nil && auth.AuthID != "" {
+		return mixin.NewFromOauthKeystore(&auth)
+	}
+
+	r.Reset(token)
+	var key mixin.Keystore
+	if err := json.NewDecoder(r).Decode(&key); err == nil {
+		return mixin.NewFromKeystore(&key)
+	}
+
+	return nil, fmt.Errorf("decode token failed")
+}
+
 func handleAuth() func(next http.Handler) http.Handler {
 	var (
 		users = cache.New[string, *User]()
@@ -26,14 +45,9 @@ func handleAuth() func(next http.Handler) http.Handler {
 			ctx := r.Context()
 			token := extractBearerToken(r)
 
-			var key mixin.OauthKeystore
-			if err := json.NewDecoder(strings.NewReader(token)).Decode(&key); err != nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			client, err := mixin.NewFromOauthKeystore(&key)
+			client, err := clientFromToken(token)
 			if err != nil {
+				slog.Error("clientFromToken", "err", err)
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -50,7 +64,7 @@ func handleAuth() func(next http.Handler) http.Handler {
 
 				user := &User{
 					MixinID: u.UserID,
-					Key:     key,
+					Token:   token,
 				}
 
 				users.Set(token, user)

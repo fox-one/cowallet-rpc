@@ -13,15 +13,17 @@ import (
 
 var (
 	vaultPrefix                   = []byte("v:")
+	vaultMemberIndexPrefix        = []byte("vm:")
 	jobPrefix                     = []byte("j:")
 	snapshotPrefix                = []byte("s:")
 	snapshotVaultIndexPrefix      = []byte("sv:")
 	snapshotVaultAssetIndexPrefix = []byte("sva:")
 	propertyPrefix                = []byte("p:")
-	logPrefix                     = []byte("l:")
+	outputPrefix                  = []byte("o:")
 	addressPrefix                 = []byte("a:")
 	renewPrefix                   = []byte("r:")
 	renewVaultIndexPrefix         = []byte("rv:")
+	remarkPrefix                  = []byte("rm:")
 )
 
 func hashMembers(ids []string, threshold uint8) uuid.UUID {
@@ -193,7 +195,17 @@ func saveVault(txn *badger.Txn, vault *Vault) error {
 		panic(err)
 	}
 
-	pk := buildIndexKey(vaultPrefix, hashMembers(vault.Members, vault.Threshold))
+	id := hashMembers(vault.Members, vault.Threshold)
+
+	for _, m := range vault.Members {
+		user := uuid.MustParse(m)
+		k := buildIndexKey(vaultMemberIndexPrefix, user, id)
+		if err := txn.Set(k, nil); err != nil {
+			return err
+		}
+	}
+
+	pk := buildIndexKey(vaultPrefix, id)
 	e := badger.NewEntry(pk, b)
 	return txn.SetEntry(e)
 }
@@ -230,16 +242,43 @@ func FindVault(db *badger.DB, members []string, threshold uint8) (*Vault, error)
 	return findVault(txn, members, threshold)
 }
 
-// func SaveVault(db *badger.DB, vault *Vault) error {
-// 	txn := db.NewTransaction(true)
-// 	defer txn.Discard()
+func listVaults(txn *badger.Txn, user string) ([]*Vault, error) {
+	opt := badger.DefaultIteratorOptions
+	opt.PrefetchValues = false
 
-// 	if err := saveVault(txn, vault); err != nil {
-// 		return err
-// 	}
+	it := txn.NewIterator(opt)
+	defer it.Close()
 
-// 	return txn.Commit()
-// }
+	var vaults []*Vault
+
+	prefix := buildIndexKey(vaultMemberIndexPrefix, uuid.MustParse(user))
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		var id uuid.UUID
+		if err := decodeIndexKey(it.Item().Key(), prefix, &id); err != nil {
+			return nil, err
+		}
+
+		item, err := txn.Get(buildIndexKey(vaultPrefix, id))
+		if err != nil {
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				continue
+			}
+
+			return nil, err
+		}
+
+		var vault Vault
+		if err := item.Value(func(b []byte) error {
+			return json.Unmarshal(b, &vault)
+		}); err != nil {
+			return nil, err
+		}
+
+		vaults = append(vaults, &vault)
+	}
+
+	return vaults, nil
+}
 
 func readProperty(txn *badger.Txn, key string, val any) error {
 	item, err := txn.Get(buildIndexKey(propertyPrefix, key))
@@ -275,50 +314,6 @@ func SaveProperty(db *badger.DB, key string, val any) error {
 	defer txn.Discard()
 
 	return saveProperty(txn, key, val)
-}
-
-func saveLog(txn *badger.Txn, log *Log) error {
-	b, err := json.Marshal(log)
-	if err != nil {
-		return err
-	}
-
-	key := buildIndexKey(logPrefix, log.Seq)
-	return txn.Set(key, b)
-}
-
-func deleteLog(txn *badger.Txn, seq uint64) error {
-	key := buildIndexKey(logPrefix, seq)
-	return txn.Delete(key)
-}
-
-func listLogs(txn *badger.Txn, limit int) ([]*Log, error) {
-	opts := badger.DefaultIteratorOptions
-	opts.PrefetchSize = limit
-	it := txn.NewIterator(opts)
-	defer it.Close()
-
-	var logs []*Log
-	for it.Seek(logPrefix); it.ValidForPrefix(logPrefix) && len(logs) < limit; it.Next() {
-		var log Log
-
-		if err := it.Item().Value(func(b []byte) error {
-			return json.Unmarshal(b, &log)
-		}); err != nil {
-			return nil, err
-		}
-
-		logs = append(logs, &log)
-	}
-
-	return logs, nil
-}
-
-func ListLogs(db *badger.DB, limit int) ([]*Log, error) {
-	txn := db.NewTransaction(false)
-	defer txn.Discard()
-
-	return listLogs(txn, limit)
 }
 
 func saveRenew(txn *badger.Txn, r *Renew) error {
@@ -370,33 +365,64 @@ func findRenew(txn *badger.Txn, id uuid.UUID) (*Renew, error) {
 	return &r, nil
 }
 
-func saveAddress(txn *badger.Txn, v Address) error {
-	v.UpdatedAt = time.Now()
+func lastRenew(txn *badger.Txn, members []string, threshold uint8) (*Renew, error) {
+	opt := badger.DefaultIteratorOptions
+	opt.Reverse = true
+	opt.PrefetchValues = false
 
+	it := txn.NewIterator(opt)
+	defer it.Close()
+
+	prefix := buildIndexKey(renewVaultIndexPrefix, hashMembers(members, threshold))
+
+	ts := time.Now().UnixNano()
+	it.Seek(buildIndexKey(prefix, ts))
+	if !it.ValidForPrefix(prefix) {
+		return nil, badger.ErrKeyNotFound
+	}
+
+	var id uuid.UUID
+	if err := decodeIndexKey(it.Item().Key(), prefix, &ts, &id); err != nil {
+		return nil, err
+	}
+
+	return findRenew(txn, id)
+}
+
+func getVaultExpiredAt(txn *badger.Txn, members []string, threshold uint8) (time.Time, uint64, error) {
+	r, err := lastRenew(txn, members, threshold)
+	if err != nil {
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return time.Time{}, 0, nil
+		}
+
+		return time.Time{}, 0, err
+	}
+
+	return r.To, r.Sequence, nil
+}
+
+func saveAddress(txn *badger.Txn, v Address) error {
 	pk := buildIndexKey(addressPrefix, v.UserID, hashMembers(v.Members, v.Threshold))
+	if v.Label == "" {
+		return txn.Delete(pk)
+	}
+
+	v.UpdatedAt = time.Now()
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
 
-	if err := txn.Set(pk, b); err != nil {
-		return err
-	}
-
-	return nil
+	return txn.Set(pk, b)
 }
 
-func deleteAddress(txn *badger.Txn, user uuid.UUID, members []string, threshold uint8) error {
-	pk := buildIndexKey(addressPrefix, user, hashMembers(members, threshold))
-	return txn.Delete(pk)
-}
-
-func listAddress(txn *badger.Txn, user uuid.UUID) ([]Address, error) {
+func listAddress(txn *badger.Txn, user uuid.UUID) ([]*Address, error) {
 	opt := badger.DefaultIteratorOptions
 	it := txn.NewIterator(opt)
 	defer it.Close()
 
-	var outputs []Address
+	outputs := []*Address{}
 
 	prefix := buildIndexKey(addressPrefix, user)
 	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
@@ -407,15 +433,69 @@ func listAddress(txn *badger.Txn, user uuid.UUID) ([]Address, error) {
 			return nil, err
 		}
 
-		outputs = append(outputs, v)
+		outputs = append(outputs, &v)
 	}
 
 	return outputs, nil
 }
 
-func ListAddress(db *badger.DB, user uuid.UUID) ([]Address, error) {
+func ListAddress(db *badger.DB, user uuid.UUID) ([]*Address, error) {
 	txn := db.NewTransaction(false)
 	defer txn.Discard()
 
 	return listAddress(txn, user)
+}
+
+func saveRemark(txn *badger.Txn, r *Remark) error {
+	k := buildIndexKey(
+		remarkPrefix,
+		r.User,
+		hashMembers(r.Members, r.Threshold),
+	)
+
+	if r.Name == "" {
+		return txn.Delete(k)
+	}
+
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+
+	return txn.Set(k, b)
+}
+
+func getRemark(txn *badger.Txn, user uuid.UUID, members []string, threshold uint8) (*Remark, error) {
+	k := buildIndexKey(
+		remarkPrefix,
+		user,
+		hashMembers(members, threshold),
+	)
+
+	item, err := txn.Get(k)
+	if err != nil {
+		return nil, err
+	}
+
+	var r Remark
+	if err := item.Value(func(b []byte) error {
+		return json.Unmarshal(b, &r)
+	}); err != nil {
+		return nil, err
+	}
+
+	return &r, nil
+}
+
+func getRemarkName(txn *badger.Txn, user uuid.UUID, members []string, threshold uint8) (string, error) {
+	r, err := getRemark(txn, user, members, threshold)
+	if err != nil {
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return "", nil
+		}
+
+		return "", err
+	}
+
+	return r.Name, nil
 }

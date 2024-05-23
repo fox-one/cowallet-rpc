@@ -4,11 +4,16 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/asaskevich/govalidator"
+	"github.com/dgraph-io/badger/v4"
+	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/rs/cors"
 	"github.com/spf13/cast"
 	"github.com/twitchtv/twirp"
@@ -23,9 +28,23 @@ func (s *Server) Handler() http.Handler {
 	m.Use(cors.AllowAll().Handler)
 	m.Use(handleAuth())
 
-	m.Get("/vaults", s.findVault)
-	m.Put("/vaults", s.updateVault)
-	m.Get("/snapshots", s.listSnapshots)
+	m.Get("/info", s.getSystemInfo)
+
+	m.Route("/vaults", func(r chi.Router) {
+		r.Get("/", s.listVaults)
+		r.Get("/{addr}", s.findVault)
+		r.Put("/{addr}", s.updateVault)
+	})
+
+	m.Route("/snapshots", func(r chi.Router) {
+		r.Get("/", s.listSnapshots)
+		r.Get("/{addr}", s.listSnapshots)
+	})
+
+	m.Route("/addresses", func(r chi.Router) {
+		r.Get("/", s.listAddresses)
+		r.Post("/", s.saveAddress)
+	})
 
 	return m
 }
@@ -41,7 +60,69 @@ func renderErr(w http.ResponseWriter, err error) {
 	_ = twirp.WriteError(w, err)
 }
 
-func (s *Server) updateVault(w http.ResponseWriter, r *http.Request) {
+type VaultView struct {
+	*Vault
+
+	Name      string    `json:"name"`
+	ExpiredAt time.Time `json:"expired_at"`
+}
+
+type VaultParam struct {
+	user      *User
+	members   []string
+	threshold uint8
+	query     url.Values
+}
+
+func extractVault(r *http.Request) (*VaultParam, error) {
+	ctx := r.Context()
+	user, ok := UserFrom(ctx)
+	if !ok {
+		return nil, twirp.Unauthenticated.Error("unauthenticated")
+	}
+
+	q := r.URL.Query()
+	members := q["members"]
+	threshold := cast.ToUint8(q.Get("threshold"))
+
+	if s := chi.URLParam(r, "addr"); s != "" {
+		addr, err := mixin.MixAddressFromString(s)
+		if err != nil {
+			return nil, twirp.InvalidArgumentError("addr", "invalid")
+		}
+
+		members = addr.Members()
+		threshold = addr.Threshold
+	} else if _, err := mixin.NewMixAddress(members, threshold); err != nil {
+		return nil, twirp.InvalidArgumentError("members", "invalid")
+	}
+
+	if !govalidator.IsIn(user.MixinID, members...) {
+		return nil, twirp.PermissionDenied.Error("permission denied")
+	}
+
+	return &VaultParam{
+		user:      user,
+		members:   members,
+		threshold: threshold,
+		query:     q,
+	}, nil
+}
+
+func (s *Server) getSystemInfo(w http.ResponseWriter, r *http.Request) {
+	renderJSON(w, map[string]any{
+		"client_id":    s.client.ClientID,
+		"pay_asset_id": s.cfg.PayAssetID,
+		"pay_amount":   s.cfg.PayAmount,
+	})
+}
+
+func (s *Server) listVaults(w http.ResponseWriter, r *http.Request) {
+	if _, err := extractVault(r); err == nil {
+		s.findVault(w, r)
+		return
+	}
+
 	ctx := r.Context()
 	user, ok := UserFrom(ctx)
 	if !ok {
@@ -49,41 +130,118 @@ func (s *Server) updateVault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body struct {
-		Name      string   `json:"name"`
-		Members   []string `json:"members"`
-		Threshold uint8    `json:"threshold"`
-	}
+	txn := s.db.NewTransaction(false)
+	defer txn.Discard()
 
-	if !govalidator.IsIn(user.MixinID, body.Members...) {
-		slog.Warn("user not in members", "user", user.MixinID, "members", body.Members)
-		renderErr(w, twirp.PermissionDenied.Error("permission denied"))
-		return
-	}
-
-	if body.Threshold == 0 || body.Threshold > uint8(len(body.Members)) {
-		renderErr(w, twirp.InvalidArgumentError("threshold", "invalid threshold"))
-		return
-	}
-
-	if body.Name == "" {
-		renderErr(w, twirp.InvalidArgumentError("name", "invalid"))
-		return
-	}
-
-	txn := s.db.NewTransaction(true)
-	defer txn.Commit()
-
-	vault, err := findVault(txn, body.Members, body.Threshold)
+	vaults, err := listVaults(txn, user.MixinID)
 	if err != nil {
 		renderErr(w, err)
 		return
 	}
 
-	if vault.Name != body.Name {
-		vault.Name = body.Name
+	views := []VaultView{}
+	for _, v := range vaults {
+		name, err := getRemarkName(txn, uuid.MustParse(user.MixinID), v.Members, v.Threshold)
+		if err != nil {
+			renderErr(w, err)
+			return
+		}
 
-		if err := saveVault(txn, vault); err != nil {
+		expiredAt, _, err := getVaultExpiredAt(txn, v.Members, v.Threshold)
+		if err != nil {
+			renderErr(w, err)
+			return
+		}
+
+		view := VaultView{
+			Vault:     v,
+			Name:      name,
+			ExpiredAt: expiredAt,
+		}
+
+		views = append(views, view)
+	}
+
+	renderJSON(w, views)
+}
+
+func (s *Server) updateVault(w http.ResponseWriter, r *http.Request) {
+	p, err := extractVault(r)
+	if err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	var body struct {
+		Name string `json:"name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		renderErr(w, twirp.InvalidArgumentError("body", "invalid"))
+		return
+	}
+
+	remark := &Remark{
+		User:      uuid.MustParse(p.user.MixinID),
+		Members:   p.members,
+		Threshold: p.threshold,
+		Name:      strings.TrimSpace(body.Name),
+		UpdatedAt: time.Now(),
+	}
+
+	txn := s.db.NewTransaction(true)
+	defer txn.Discard()
+
+	if err := saveRemark(txn, remark); err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	if err := txn.Commit(); err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	renderJSON(w, remark)
+}
+
+func (s *Server) findVault(w http.ResponseWriter, r *http.Request) {
+	p, err := extractVault(r)
+	if err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	txn := s.db.NewTransaction(true)
+	defer txn.Discard()
+
+	vault, err := findVault(txn, p.members, p.threshold)
+	if err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	name, err := getRemarkName(txn, uuid.MustParse(p.user.MixinID), vault.Members, vault.Threshold)
+	if err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	expiredAt, _, err := getVaultExpiredAt(txn, vault.Members, vault.Threshold)
+	if err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	if dur := time.Until(expiredAt); dur > 0 {
+		job := &Job{
+			CreatedAt: time.Now(),
+			User:      p.user,
+			Members:   vault.Members,
+			Threshold: vault.Threshold,
+		}
+
+		if err := saveJob(txn, job, min(5*time.Minute, dur)); err != nil {
 			renderErr(w, err)
 			return
 		}
@@ -94,81 +252,23 @@ func (s *Server) updateVault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderJSON(w, vault)
+	renderJSON(w, VaultView{
+		Vault:     vault,
+		Name:      name,
+		ExpiredAt: expiredAt,
+	})
 }
 
-func (s *Server) findVault(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	user, ok := UserFrom(ctx)
-	if !ok {
-		renderErr(w, twirp.Unauthenticated.Error("unauthenticated"))
-		return
-	}
-
-	q := r.URL.Query()
-	members := q["members"]
-	threshold := cast.ToUint8(q.Get("threshold"))
-
-	if !govalidator.IsIn(user.MixinID, members...) {
-		slog.Warn("xx user not in members", "user", user.MixinID, "members", members)
-		renderErr(w, twirp.PermissionDenied.Error("permission denied"))
-		return
-	}
-
-	if threshold == 0 || threshold > uint8(len(members)) {
-		renderErr(w, twirp.InvalidArgumentError("threshold", "invalid threshold"))
-		return
-	}
-
-	txn := s.db.NewTransaction(true)
-	defer txn.Discard()
-
-	vault, err := findVault(txn, members, threshold)
+func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
+	p, err := extractVault(r)
 	if err != nil {
 		renderErr(w, err)
 		return
 	}
 
-	job := &Job{
-		CreatedAt: time.Now(),
-		User:      user,
-		Members:   members,
-		Threshold: threshold,
-	}
-
-	if err := saveJob(txn, job, 5*time.Minute); err != nil {
-		renderErr(w, err)
-		return
-	}
-
-	if err := txn.Commit(); err != nil {
-		renderErr(w, err)
-		return
-	}
-
-	renderJSON(w, vault)
-}
-
-func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	user, ok := UserFrom(ctx)
-	if !ok {
-		renderErr(w, twirp.Unauthenticated.Error("unauthenticated"))
-		return
-	}
-
-	q := r.URL.Query()
-	members := q["members"]
-	if !govalidator.IsIn(user.MixinID, members...) {
-		slog.Warn("user not in members", "user", user.MixinID, "members", members)
-		renderErr(w, twirp.PermissionDenied.Error("permission denied"))
-		return
-	}
-
-	threshold := cast.ToUint8(q.Get("threshold"))
-	since := cast.ToTime(q.Get("offset"))
-	limit := cast.ToInt(q.Get("limit"))
-	assetID := q.Get("asset")
+	since := cast.ToTime(p.query.Get("offset"))
+	limit := cast.ToInt(p.query.Get("limit"))
+	assetID := p.query.Get("asset")
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
@@ -176,8 +276,7 @@ func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
 	txn := s.db.NewTransaction(false)
 	defer txn.Discard()
 
-	slog.Info("list snapshots", "members", members, "threshold", threshold, "asset", assetID, "since", since, "limit", limit)
-	snapshots, err := listSnapshots(txn, members, threshold, assetID, since, limit)
+	snapshots, err := listSnapshots(txn, p.members, p.threshold, assetID, since, limit)
 	if err != nil {
 		slog.Error("listSnapshots", "error", err)
 		renderErr(w, err)
@@ -185,4 +284,72 @@ func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderJSON(w, snapshots)
+}
+
+func (s *Server) listAddresses(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user, ok := UserFrom(ctx)
+	if !ok {
+		renderErr(w, twirp.Unauthenticated.Error("unauthenticated"))
+		return
+	}
+
+	outputs, err := ListAddress(s.db, uuid.MustParse(user.MixinID))
+	if err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	renderJSON(w, outputs)
+}
+
+func (s *Server) saveAddress(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user, ok := UserFrom(ctx)
+	if !ok {
+		renderErr(w, twirp.Unauthenticated.Error("unauthenticated"))
+		return
+	}
+
+	var body struct {
+		Address   string   `json:"address"`
+		Members   []string `json:"members"`
+		Threshold uint8    `json:"threshold"`
+		Name      string   `json:"name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		renderErr(w, twirp.InvalidArgumentError("body", "invalid"))
+		return
+	}
+
+	if body.Address != "" {
+		addr, err := mixin.MixAddressFromString(body.Address)
+		if err != nil {
+			renderErr(w, twirp.InvalidArgumentError("address", "invalid"))
+			return
+		}
+		body.Members = addr.Members()
+		body.Threshold = addr.Threshold
+	} else if _, err := mixin.NewMixAddress(body.Members, body.Threshold); err != nil {
+		renderErr(w, twirp.InvalidArgumentError("members", "invalid"))
+		return
+	}
+
+	v := Address{
+		UserID:    uuid.MustParse(user.MixinID),
+		Members:   body.Members,
+		Threshold: body.Threshold,
+		Label:     strings.TrimSpace(body.Name),
+		UpdatedAt: time.Now(),
+	}
+
+	if err := s.db.Update(func(txn *badger.Txn) error {
+		return saveAddress(txn, v)
+	}); err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	renderJSON(w, v)
 }

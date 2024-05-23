@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	backend "github.com/fox-one/cowallet"
+	"github.com/fox-one/mixin-sdk-go/v2"
+	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
+	"github.com/shopspring/decimal"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -33,9 +37,44 @@ func init() {
 	flag.Parse()
 }
 
+func initMixinClient(ctx context.Context) (*mixin.Client, mixinnet.Key) {
+	f, err := os.Open(cfg.keystorePath)
+	if err != nil {
+		panic(err)
+	}
+
+	var key struct {
+		mixin.Keystore
+		SpendKey string `json:"spend_key"`
+	}
+
+	if err := json.NewDecoder(f).Decode(&key); err != nil {
+		panic(err)
+	}
+
+	client, err := mixin.NewFromKeystore(&key.Keystore)
+	if err != nil {
+		panic(err)
+	}
+
+	user, err := client.UserMe(ctx)
+	if err != nil {
+		panic(err)
+	}
+
+	spendKey, err := mixinnet.ParseKeyWithPub(key.SpendKey, user.SpendPublicKey)
+	if err != nil {
+		panic(err)
+	}
+
+	return client, spendKey
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer stop()
+
+	client, spendKey := initMixinClient(ctx)
 
 	db, err := badger.Open(badger.DefaultOptions(cfg.dbPath))
 	if err != nil {
@@ -43,9 +82,15 @@ func main() {
 		return
 	}
 
+	defer db.Close()
+
 	slog.Info("cowallet rpc launch", "ver", "0.01")
 
-	svr := backend.NewServer(db)
+	svr := backend.NewServer(db, client, backend.Config{
+		SpendKey:   spendKey,
+		PayAssetID: cfg.payAsset,
+		PayAmount:  decimal.NewFromFloat(cfg.payAmount),
+	})
 
 	s := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.port),

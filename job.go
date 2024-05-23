@@ -57,9 +57,9 @@ func (s *Server) handlePendingJobs(ctx context.Context) error {
 func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 	slog.Info("handle job", "user", job.User.MixinID, "members", job.Members, "threshold", job.Threshold)
 
-	client, err := mixin.NewFromOauthKeystore(&job.User.Key)
+	client, err := clientFromToken(job.User.Token)
 	if err != nil {
-		slog.Error("NewFromOauthKeystore", "error", err)
+		slog.Error("clientFromToken", "error", err)
 		return err
 	}
 
@@ -158,10 +158,6 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 		if len(outputs) == 0 {
 			break
 		}
-	}
-
-	if offset <= vault.Offset {
-		return nil
 	}
 
 	vault.Assets = vault.Assets[0:0]

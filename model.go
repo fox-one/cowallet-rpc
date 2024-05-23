@@ -17,7 +17,6 @@ type Asset struct {
 }
 
 type Vault struct {
-	Name      string    `json:"name"`
 	Members   []string  `json:"members"`
 	Threshold uint8     `json:"threshold"`
 	Offset    uint64    `json:"offset"`
@@ -58,9 +57,10 @@ type Renew struct {
 	To        time.Time       `json:"to"`
 }
 
-type Log struct {
-	Seq       uint64    `json:"seq"`
-	CreatedAt time.Time `json:"created_at"`
-	TraceID   string    `json:"trace_id"`
-	Memo      string    `json:"memo"`
+type Remark struct {
+	User      uuid.UUID `json:"user"`
+	Members   []string  `json:"members"`
+	Threshold uint8     `json:"threshold"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
