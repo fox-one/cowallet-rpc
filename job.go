@@ -55,6 +55,15 @@ func (s *Server) handlePendingJobs(ctx context.Context) error {
 }
 
 func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
+	if job.User == nil {
+		return db.Update(func(txn *badger.Txn) error {
+			return saveVault(txn,&Vault{
+				Members: job.Members,
+				Threshold: job.Threshold,
+			})
+		})
+	}
+
 	slog.Info("handle job", "user", job.User.MixinID, "members", job.Members, "threshold", job.Threshold)
 
 	client, err := clientFromToken(job.User.Token)

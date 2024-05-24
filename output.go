@@ -179,5 +179,15 @@ func (s *Server) renewVault(txn *badger.Txn, output *mixin.SafeUtxo, addr *mixin
 		return err
 	}
 
+	job := &Job{
+		CreatedAt: time.Now(),
+		Members:   r.Members,
+		Threshold: r.Threshold,
+	}
+
+	if err := saveJob(txn, job, time.Minute); err != nil {
+		return err
+	}
+
 	return nil
 }

@@ -21,6 +21,15 @@ func TestMixAddress(t *testing.T) {
 	t.Log(addr.String())
 }
 
+func TestDecodeMixAddress(t *testing.T) {
+	addr, err := mixin.MixAddressFromString("MIX2JtYcHzHeVUocQQwX3sEoH3AMNFUeqNxqzGaRDCU9drszpaa2MudF")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Log(addr.Members(), addr.Threshold)
+}
+
 func TestDecodeExtra(t *testing.T) {
 	extra := "383038302f7661756c74732f4d4958324a745a43587044325378674831426d5a3174696934776132347143767469726f5739414e4151334b6866637368436a4e67726346"
 	b, err := hex.DecodeString(extra)

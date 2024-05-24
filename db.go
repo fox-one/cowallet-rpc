@@ -189,6 +189,20 @@ func ListJobs(db *badger.DB) ([]*Job, error) {
 	return listJobs(txn)
 }
 
+func saveVaultIfNotExist(txn *badger.Txn, vault *Vault) error {
+	id := hashMembers(vault.Members, vault.Threshold)
+	pk := buildIndexKey(vaultPrefix, id)
+	if _, err := txn.Get(pk); err != nil {
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return saveVault(txn, vault)
+		}
+
+		return err
+	}
+
+	return nil
+}
+
 func saveVault(txn *badger.Txn, vault *Vault) error {
 	b, err := json.Marshal(vault)
 	if err != nil {
