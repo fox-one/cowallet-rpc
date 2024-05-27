@@ -3,6 +3,7 @@ package cowallet
 import (
 	"time"
 
+	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -14,6 +15,8 @@ type Asset struct {
 	Unspent  decimal.Decimal `json:"unspent"`
 	Signed   decimal.Decimal `json:"signed"`
 	Requests []string        `json:"requests"`
+
+	Asset *mixin.SafeAsset `json:"asset,omitempty"`
 }
 
 type Vault struct {

@@ -7,6 +7,7 @@ import (
 	"github.com/fox-one/mixin-sdk-go/v2"
 	"github.com/fox-one/mixin-sdk-go/v2/mixinnet"
 	"github.com/shopspring/decimal"
+	"github.com/yiplee/go-cache"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -20,6 +21,8 @@ type Server struct {
 	db     *badger.DB
 	client *mixin.Client
 	cfg    Config
+
+	assets *cache.Cache[string, *mixin.SafeAsset]
 }
 
 func NewServer(
@@ -31,6 +34,7 @@ func NewServer(
 		db:     db,
 		client: client,
 		cfg:    cfg,
+		assets: cache.New[string, *mixin.SafeAsset](),
 	}
 }
 

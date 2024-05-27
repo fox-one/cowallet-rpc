@@ -1,6 +1,7 @@
 package cowallet
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/rs/cors"
 	"github.com/spf13/cast"
 	"github.com/twitchtv/twirp"
+	"github.com/yiplee/go-cache"
 )
 
 func (s *Server) Handler() http.Handler {
@@ -159,6 +161,7 @@ func (s *Server) listVaults(w http.ResponseWriter, r *http.Request) {
 			ExpiredAt: expiredAt,
 		}
 
+		s.bindVaultAssets(ctx, &view)
 		views = append(views, view)
 	}
 
@@ -252,11 +255,13 @@ func (s *Server) findVault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderJSON(w, VaultView{
+	view := VaultView{
 		Vault:     vault,
 		Name:      name,
 		ExpiredAt: expiredAt,
-	})
+	}
+	s.bindVaultAssets(r.Context(), &view)
+	renderJSON(w, view)
 }
 
 func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -352,4 +357,30 @@ func (s *Server) saveAddress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderJSON(w, v)
+}
+
+func (s *Server) getSafeAsset(ctx context.Context, id string) (*mixin.SafeAsset, error) {
+	v, ok := s.assets.Get(id)
+	if ok {
+		return v, nil
+	}
+
+	v, err := s.client.SafeReadAsset(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	s.assets.Set(id, v, cache.WithTTL(10*time.Minute))
+	return v, nil
+}
+
+func (s *Server) bindVaultAssets(ctx context.Context, view *VaultView) {
+	for _, asset := range view.Assets {
+		v, err := s.getSafeAsset(ctx, asset.ID)
+		if err != nil {
+			continue
+		}
+
+		asset.Asset = v
+	}
 }
