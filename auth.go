@@ -52,6 +52,13 @@ func handleAuth() func(next http.Handler) http.Handler {
 				return
 			}
 
+			defer func() {
+				if err := recover(); err != nil {
+					slog.Error("panic", "err", err)
+					next.ServeHTTP(w, r)
+				}
+			}()
+
 			user, err, _ := sf.Do(token, func() (interface{}, error) {
 				if u, ok := users.Get(token); ok {
 					return u, nil
