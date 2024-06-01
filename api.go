@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	m.Route("/addresses", func(r chi.Router) {
 		r.Get("/", s.listAddresses)
 		r.Post("/", s.saveAddress)
+		r.Delete("/{addr}", s.deleteAddress)
 	})
 
 	return m
@@ -308,6 +309,36 @@ func (s *Server) listAddresses(w http.ResponseWriter, r *http.Request) {
 	renderJSON(w, outputs)
 }
 
+func (s *Server) deleteAddress(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user, ok := UserFrom(ctx)
+	if !ok {
+		renderErr(w, twirp.Unauthenticated.Error("unauthenticated"))
+		return
+	}
+
+	addr, err := mixin.MixAddressFromString(chi.URLParam(r, "addr"))
+	if err != nil {
+		renderErr(w, twirp.InvalidArgument.Error("invalid address"))
+		return
+	}
+
+	v := Address{
+		UserID:    uuid.MustParse(user.MixinID),
+		Members:   addr.Members(),
+		Threshold: uint8(addr.Threshold),
+	}
+
+	if err := s.db.Update(func(txn *badger.Txn) error {
+		return saveAddress(txn, v)
+	}); err != nil {
+		renderErr(w, err)
+		return
+	}
+
+	renderJSON(w, v)
+}
+
 func (s *Server) saveAddress(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user, ok := UserFrom(ctx)
@@ -320,7 +351,7 @@ func (s *Server) saveAddress(w http.ResponseWriter, r *http.Request) {
 		Address   string   `json:"address"`
 		Members   []string `json:"members"`
 		Threshold uint8    `json:"threshold"`
-		Name      string   `json:"name"`
+		Label     string   `json:"label"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -345,8 +376,13 @@ func (s *Server) saveAddress(w http.ResponseWriter, r *http.Request) {
 		UserID:    uuid.MustParse(user.MixinID),
 		Members:   body.Members,
 		Threshold: body.Threshold,
-		Label:     strings.TrimSpace(body.Name),
+		Label:     strings.TrimSpace(body.Label),
 		UpdatedAt: time.Now(),
+	}
+
+	if v.Label == "" {
+		renderErr(w, twirp.InvalidArgument.Error("label is required"))
+		return
 	}
 
 	if err := s.db.Update(func(txn *badger.Txn) error {
