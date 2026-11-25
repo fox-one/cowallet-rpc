@@ -24,6 +24,7 @@ var (
 	renewPrefix                   = []byte("r:")
 	renewVaultIndexPrefix         = []byte("rv:")
 	remarkPrefix                  = []byte("rm:")
+	invalidTokenPrefix            = []byte("it:")
 )
 
 func hashMembers(ids []string, threshold uint8) uuid.UUID {
@@ -512,4 +513,88 @@ func getRemarkName(txn *badger.Txn, user uuid.UUID, members []string, threshold 
 	}
 
 	return r.Name, nil
+}
+
+func invalidTokenKey(tokenHash []byte) []byte {
+	key := make([]byte, 0, len(invalidTokenPrefix)+len(tokenHash))
+	key = append(key, invalidTokenPrefix...)
+	return append(key, tokenHash...)
+}
+
+func saveInvalidToken(txn *badger.Txn, tokenHash []byte, ttl time.Duration) error {
+	e := badger.NewEntry(invalidTokenKey(tokenHash), nil).WithTTL(ttl)
+	return txn.SetEntry(e)
+}
+
+func getInvalidTokenTTL(txn *badger.Txn, tokenHash []byte) (time.Duration, bool, error) {
+	item, err := txn.Get(invalidTokenKey(tokenHash))
+	if err != nil {
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return 0, false, nil
+		}
+
+		return 0, false, err
+	}
+
+	exp := item.ExpiresAt()
+	if exp == 0 {
+		return 0, true, nil
+	}
+
+	rem := time.Until(time.Unix(int64(exp), 0))
+	if rem <= 0 {
+		return 0, false, nil
+	}
+
+	return rem, true, nil
+}
+
+func deleteJobIfNilUser(txn *badger.Txn, members []string, threshold uint8) error {
+	pk := buildIndexKey(jobPrefix, hashMembers(members, threshold))
+	item, err := txn.Get(pk)
+	if err != nil {
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return nil
+		}
+
+		return err
+	}
+
+	var job Job
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &job)
+	}); err != nil {
+		return err
+	}
+
+	if job.User == nil {
+		return txn.Delete(pk)
+	}
+
+	return nil
+}
+
+func deleteJobIfTokenMatch(txn *badger.Txn, members []string, threshold uint8, token string) error {
+	pk := buildIndexKey(jobPrefix, hashMembers(members, threshold))
+	item, err := txn.Get(pk)
+	if err != nil {
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return nil
+		}
+
+		return err
+	}
+
+	var job Job
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &job)
+	}); err != nil {
+		return err
+	}
+
+	if job.User != nil && job.User.Token == token {
+		return txn.Delete(pk)
+	}
+
+	return nil
 }
