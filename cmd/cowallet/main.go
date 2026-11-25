@@ -37,15 +37,17 @@ func init() {
 	flag.Parse()
 }
 
-func initMixinClient(ctx context.Context) (*mixin.Client, mixinnet.Key) {
+func initMixinClient(ctx context.Context) (*mixin.Client, mixinnet.Key, []string) {
 	f, err := os.Open(cfg.keystorePath)
 	if err != nil {
 		panic(err)
 	}
+	defer f.Close()
 
 	var key struct {
 		mixin.Keystore
-		SpendKey string `json:"spend_key"`
+		SpendKey  string   `json:"spend_key"`
+		Whitelist []string `json:"whitelist"`
 	}
 
 	if err := json.NewDecoder(f).Decode(&key); err != nil {
@@ -67,14 +69,14 @@ func initMixinClient(ctx context.Context) (*mixin.Client, mixinnet.Key) {
 		panic(err)
 	}
 
-	return client, spendKey
+	return client, spendKey, key.Whitelist
 }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer stop()
 
-	client, spendKey := initMixinClient(ctx)
+	client, spendKey, whitelist := initMixinClient(ctx)
 
 	db, err := badger.Open(badger.DefaultOptions(cfg.dbPath))
 	if err != nil {
@@ -90,6 +92,7 @@ func main() {
 		SpendKey:   spendKey,
 		PayAssetID: cfg.payAsset,
 		PayAmount:  decimal.NewFromFloat(cfg.payAmount),
+		Whitelist:  whitelist,
 	})
 
 	s := &http.Server{

@@ -28,25 +28,28 @@ func (s *Server) Handler() http.Handler {
 	m.Use(middleware.Logger)
 	m.Use(middleware.Heartbeat("/hc"))
 	m.Use(cors.AllowAll().Handler)
-	m.Use(handleAuth())
 
 	m.Get("/info", s.getSystemInfo)
 
-	m.Route("/vaults", func(r chi.Router) {
-		r.Get("/", s.listVaults)
-		r.Get("/{addr}", s.findVault)
-		r.Put("/{addr}", s.updateVault)
-	})
+	m.Group(func(r chi.Router) {
+		r.Use(s.handleAuth())
 
-	m.Route("/snapshots", func(r chi.Router) {
-		r.Get("/", s.listSnapshots)
-		r.Get("/{addr}", s.listSnapshots)
-	})
+		r.Route("/vaults", func(r chi.Router) {
+			r.Get("/", s.listVaults)
+			r.Get("/{addr}", s.findVault)
+			r.Put("/{addr}", s.updateVault)
+		})
 
-	m.Route("/addresses", func(r chi.Router) {
-		r.Get("/", s.listAddresses)
-		r.Post("/", s.saveAddress)
-		r.Delete("/{addr}", s.deleteAddress)
+		r.Route("/snapshots", func(r chi.Router) {
+			r.Get("/", s.listSnapshots)
+			r.Get("/{addr}", s.listSnapshots)
+		})
+
+		r.Route("/addresses", func(r chi.Router) {
+			r.Get("/", s.listAddresses)
+			r.Post("/", s.saveAddress)
+			r.Delete("/{addr}", s.deleteAddress)
+		})
 	})
 
 	return m

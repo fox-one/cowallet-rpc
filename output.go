@@ -179,6 +179,13 @@ func (s *Server) renewVault(txn *badger.Txn, output *mixin.SafeUtxo, addr *mixin
 		return err
 	}
 
+	if err := saveVaultIfNotExist(txn, &Vault{
+		Members:   r.Members,
+		Threshold: r.Threshold,
+	}); err != nil {
+		return err
+	}
+
 	job := &Job{
 		CreatedAt: time.Now(),
 		Members:   r.Members,
