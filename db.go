@@ -379,7 +379,7 @@ func findRenew(txn *badger.Txn, id uuid.UUID) (*Renew, error) {
 	return &r, nil
 }
 
-func lastRenew(txn *badger.Txn, members []string, threshold uint8) (*Renew, error) {
+func lastRenewByVaultID(txn *badger.Txn, vaultID uuid.UUID) (*Renew, error) {
 	opt := badger.DefaultIteratorOptions
 	opt.Reverse = true
 	opt.PrefetchValues = false
@@ -387,7 +387,7 @@ func lastRenew(txn *badger.Txn, members []string, threshold uint8) (*Renew, erro
 	it := txn.NewIterator(opt)
 	defer it.Close()
 
-	prefix := buildIndexKey(renewVaultIndexPrefix, hashMembers(members, threshold))
+	prefix := buildIndexKey(renewVaultIndexPrefix, vaultID)
 
 	ts := time.Now().UnixNano()
 	it.Seek(buildIndexKey(prefix, ts))
@@ -403,8 +403,12 @@ func lastRenew(txn *badger.Txn, members []string, threshold uint8) (*Renew, erro
 	return findRenew(txn, id)
 }
 
-func getVaultExpiredAt(txn *badger.Txn, members []string, threshold uint8) (time.Time, uint64, error) {
-	r, err := lastRenew(txn, members, threshold)
+func lastRenew(txn *badger.Txn, members []string, threshold uint8) (*Renew, error) {
+	return lastRenewByVaultID(txn, hashMembers(members, threshold))
+}
+
+func getVaultExpiredAtByVaultID(txn *badger.Txn, vaultID uuid.UUID) (time.Time, uint64, error) {
+	r, err := lastRenewByVaultID(txn, vaultID)
 	if err != nil {
 		if errors.Is(err, badger.ErrKeyNotFound) {
 			return time.Time{}, 0, nil
@@ -414,6 +418,37 @@ func getVaultExpiredAt(txn *badger.Txn, members []string, threshold uint8) (time
 	}
 
 	return r.To, r.Sequence, nil
+}
+
+func getVaultExpiredAt(txn *badger.Txn, members []string, threshold uint8) (time.Time, uint64, error) {
+	return getVaultExpiredAtByVaultID(txn, hashMembers(members, threshold))
+}
+
+func hasActiveVault(txn *badger.Txn, user uuid.UUID) (bool, error) {
+	opt := badger.DefaultIteratorOptions
+	opt.PrefetchValues = false
+
+	it := txn.NewIterator(opt)
+	defer it.Close()
+
+	prefix := buildIndexKey(vaultMemberIndexPrefix, user)
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		var id uuid.UUID
+		if err := decodeIndexKey(it.Item().Key(), prefix, &id); err != nil {
+			return false, err
+		}
+
+		expiredAt, _, err := getVaultExpiredAtByVaultID(txn, id)
+		if err != nil {
+			return false, err
+		}
+
+		if time.Until(expiredAt) > 0 {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func saveAddress(txn *badger.Txn, v Address) error {

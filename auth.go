@@ -1,40 +1,84 @@
 package cowallet
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/dgraph-io/badger/v4"
 	"github.com/fox-one/mixin-sdk-go/v2"
+	"github.com/google/uuid"
+	"github.com/twitchtv/twirp"
 	"github.com/yiplee/go-cache"
 	"golang.org/x/sync/singleflight"
 )
 
-func extractBearerToken(r *http.Request) string {
-	token := r.Header.Get("Authorization")
-	return strings.TrimPrefix(token, "Bearer ")
+var errUserIDMismatch = errors.New("user id mismatch")
+
+var fetchUserMe = func(ctx context.Context, client *mixin.Client) (*mixin.User, error) {
+	return client.UserMe(ctx)
 }
 
-func clientFromToken(token string) (*mixin.Client, error) {
+func extractBearerToken(r *http.Request) string {
+	token := r.Header.Get("Authorization")
+	return strings.TrimSpace(strings.TrimPrefix(token, "Bearer "))
+}
+
+func parseToken(token string) (*mixin.Client, string, error) {
 	r := strings.NewReader(token)
 
-	var auth mixin.OauthKeystore
+	var auth struct {
+		mixin.OauthKeystore
+		UserID string `json:"user_id"`
+	}
 	if err := json.NewDecoder(r).Decode(&auth); err == nil && auth.AuthID != "" {
-		return mixin.NewFromOauthKeystore(&auth)
+		c, err := mixin.NewFromOauthKeystore(&auth.OauthKeystore)
+		if err != nil {
+			return nil, "", err
+		}
+
+		return c, auth.UserID, nil
 	}
 
 	r.Reset(token)
 	var key mixin.Keystore
 	if err := json.NewDecoder(r).Decode(&key); err == nil {
-		return mixin.NewFromKeystore(&key)
+		c, err := mixin.NewFromKeystore(&key)
+		if err != nil {
+			return nil, "", err
+		}
+
+		return c, c.ClientID, nil
 	}
 
-	return nil, fmt.Errorf("decode token failed")
+	return nil, "", fmt.Errorf("decode token failed")
 }
 
-func handleAuth() func(next http.Handler) http.Handler {
+func clientFromToken(token string) (*mixin.Client, error) {
+	c, _, err := parseToken(token)
+	return c, err
+}
+
+func (s *Server) isUserAllowed(uid uuid.UUID) (bool, error) {
+	if _, ok := s.whitelist[uid.String()]; ok {
+		return true, nil
+	}
+
+	var allowed bool
+	err := s.db.View(func(txn *badger.Txn) error {
+		var err error
+		allowed, err = hasActiveVault(txn, uid)
+		return err
+	})
+
+	return allowed, err
+}
+
+func (s *Server) handleAuth() func(next http.Handler) http.Handler {
 	var (
 		users = cache.New[string, *User]()
 		sf    singleflight.Group
@@ -44,29 +88,61 @@ func handleAuth() func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			token := extractBearerToken(r)
-
-			client, err := clientFromToken(token)
-			if err != nil {
-				slog.Error("clientFromToken", "err", err)
-				next.ServeHTTP(w, r)
+			if token == "" {
+				renderErr(w, twirp.Unauthenticated.Error("unauthenticated"))
 				return
 			}
 
-			defer func() {
-				if err := recover(); err != nil {
-					slog.Error("panic", "err", err)
-					next.ServeHTTP(w, r)
-				}
-			}()
+			client, userID, err := parseToken(token)
+			if err != nil {
+				slog.Error("parseToken", "err", err)
+				renderErr(w, twirp.Unauthenticated.Error("invalid token"))
+				return
+			}
 
-			user, err, _ := sf.Do(token, func() (interface{}, error) {
+			uid, err := uuid.Parse(strings.TrimSpace(userID))
+			if err != nil {
+				slog.Error("parse user_id", "err", err)
+				renderErr(w, twirp.Unauthenticated.Error("invalid user_id"))
+				return
+			}
+
+			allowed, err := s.isUserAllowed(uid)
+			if err != nil {
+				slog.Error("isUserAllowed", "user_id", uid.String(), "err", err)
+				renderErr(w, twirp.InternalErrorWith(err))
+				return
+			}
+
+			if !allowed {
+				renderErr(w, twirp.PermissionDenied.Error("permission denied"))
+				return
+			}
+
+			res, err, _ := sf.Do(token, func() (res interface{}, err error) {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("panic", "err", r)
+						err = fmt.Errorf("auth panic: %v", r)
+					}
+				}()
+
 				if u, ok := users.Get(token); ok {
+					if !strings.EqualFold(u.MixinID, uid.String()) {
+						return nil, errUserIDMismatch
+					}
+
 					return u, nil
 				}
 
-				u, err := client.UserMe(ctx)
+				u, err := fetchUserMe(ctx, client)
 				if err != nil {
 					return nil, err
+				}
+
+				if !strings.EqualFold(u.UserID, uid.String()) {
+					slog.Warn("user_id mismatch", "expected", uid.String(), "actual", u.UserID)
+					return nil, errUserIDMismatch
 				}
 
 				user := &User{
@@ -79,11 +155,17 @@ func handleAuth() func(next http.Handler) http.Handler {
 			})
 
 			if err != nil {
-				next.ServeHTTP(w, r)
+				if errors.Is(err, errUserIDMismatch) {
+					renderErr(w, twirp.PermissionDenied.Error("user id mismatch"))
+					return
+				}
+
+				slog.Error("auth user", "user_id", uid.String(), "err", err)
+				renderErr(w, twirp.Unauthenticated.Error("unauthenticated"))
 				return
 			}
 
-			next.ServeHTTP(w, r.WithContext(WithUser(ctx, user.(*User))))
+			next.ServeHTTP(w, r.WithContext(WithUser(ctx, res.(*User))))
 		}
 
 		return http.HandlerFunc(fn)
