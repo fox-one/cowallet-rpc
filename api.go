@@ -28,7 +28,7 @@ func (s *Server) Handler() http.Handler {
 	m.Use(middleware.Logger)
 	m.Use(middleware.Heartbeat("/hc"))
 	m.Use(cors.AllowAll().Handler)
-	m.Use(handleAuth())
+	m.Use(s.handleAuth())
 
 	m.Get("/info", s.getSystemInfo)
 

@@ -22,7 +22,9 @@ type Server struct {
 	client *mixin.Client
 	cfg    Config
 
-	assets *cache.Cache[string, *mixin.SafeAsset]
+	assets        *cache.Cache[string, *mixin.SafeAsset]
+	users         *cache.Cache[string, *User]
+	invalidTokens *cache.Cache[string, struct{}]
 }
 
 func NewServer(
@@ -31,10 +33,12 @@ func NewServer(
 	cfg Config,
 ) Server {
 	return Server{
-		db:     db,
-		client: client,
-		cfg:    cfg,
-		assets: cache.New[string, *mixin.SafeAsset](),
+		db:            db,
+		client:        client,
+		cfg:           cfg,
+		assets:        cache.New[string, *mixin.SafeAsset](),
+		users:         cache.New[string, *User](),
+		invalidTokens: cache.New[string, struct{}](),
 	}
 }
 

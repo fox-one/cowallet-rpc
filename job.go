@@ -3,6 +3,7 @@ package cowallet
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -13,6 +14,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/zyedidia/generic/mapset"
 	"golang.org/x/sync/errgroup"
+)
+
+var (
+	safeListUtxos = func(ctx context.Context, client *mixin.Client, opt mixin.SafeListUtxoOption) ([]*mixin.SafeUtxo, error) {
+		return client.SafeListUtxos(ctx, opt)
+	}
+	safeReadMultisigRequests = func(ctx context.Context, client *mixin.Client, id string) (*mixin.SafeMultisigRequest, error) {
+		return client.SafeReadMultisigRequests(ctx, id)
+	}
+	safeReadUtxoByHash = func(ctx context.Context, client *mixin.Client, hash mixinnet.Hash, index uint8) (*mixin.SafeUtxo, error) {
+		return client.SafeReadUtxoByHash(ctx, hash, index)
+	}
 )
 
 type Job struct {
@@ -47,21 +60,55 @@ func (s *Server) handlePendingJobs(ctx context.Context) error {
 	for idx := range jobs {
 		job := jobs[idx]
 		g.Go(func() error {
-			return handleJob(ctx, s.db, job)
+			return s.handleJob(ctx, job)
 		})
 	}
 
 	return g.Wait()
 }
 
-func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
+func (s *Server) deleteJobIfTokenMatch(members []string, threshold uint8, token string) {
+	if err := s.db.Update(func(txn *badger.Txn) error {
+		return deleteJobIfTokenMatch(txn, members, threshold, token)
+	}); err != nil {
+		slog.Error("deleteJobIfTokenMatch", "members", members, "threshold", threshold, "err", err)
+	}
+}
+
+func (s *Server) handleJobClientError(job *Job, err error) {
 	if job.User == nil {
-		return db.Update(func(txn *badger.Txn) error {
-			return saveVaultIfNotExist(txn, &Vault{
+		return
+	}
+
+	if isPermanentAuthError(err) {
+		s.invalidateToken(job.User.Token)
+		s.deleteJobIfTokenMatch(job.Members, job.Threshold, job.User.Token)
+		return
+	}
+
+	if isForbiddenError(err) {
+		s.deleteJobIfTokenMatch(job.Members, job.Threshold, job.User.Token)
+	}
+}
+
+func (s *Server) handleJob(ctx context.Context, job *Job) (err error) {
+	if job.User == nil {
+		return s.db.Update(func(txn *badger.Txn) error {
+			if err := saveVaultIfNotExist(txn, &Vault{
 				Members:   job.Members,
 				Threshold: job.Threshold,
-			})
+			}); err != nil {
+				return err
+			}
+
+			return deleteJobIfNilUser(txn, job.Members, job.Threshold)
 		})
+	}
+
+	if invalid, err := s.isTokenInvalid(job.User.Token); err == nil && invalid {
+		slog.Warn("skip job with invalid token", "user", job.User.MixinID, "members", job.Members, "threshold", job.Threshold)
+		s.deleteJobIfTokenMatch(job.Members, job.Threshold, job.User.Token)
+		return nil
 	}
 
 	slog.Info("handle job", "user", job.User.MixinID, "members", job.Members, "threshold", job.Threshold)
@@ -69,10 +116,20 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 	client, err := clientFromToken(job.User.Token)
 	if err != nil {
 		slog.Error("clientFromToken", "error", err)
+		s.invalidateToken(job.User.Token)
+		s.deleteJobIfTokenMatch(job.Members, job.Threshold, job.User.Token)
 		return err
 	}
 
-	vault, err := FindVault(db, job.Members, job.Threshold)
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("handleJob panic", "user", job.User.MixinID, "err", r)
+			err = fmt.Errorf("%w: %v", errAuthPanic, r)
+			s.handleJobClientError(job, err)
+		}
+	}()
+
+	vault, err := FindVault(s.db, job.Members, job.Threshold)
 	if err != nil {
 		slog.Error("find vault", "error", err)
 		return err
@@ -90,7 +147,7 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 
 	for {
 		const limit = 500
-		outputs, err := client.SafeListUtxos(ctx, mixin.SafeListUtxoOption{
+		outputs, err := safeListUtxos(ctx, client, mixin.SafeListUtxoOption{
 			Members:   vault.Members,
 			Threshold: vault.Threshold,
 			Offset:    offset,
@@ -99,6 +156,7 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 
 		if err != nil {
 			slog.Error("SafeListUtxos", "error", err)
+			s.handleJobClientError(job, err)
 			return err
 		}
 
@@ -114,17 +172,19 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 
 			if output.State == mixin.SafeUtxoStateSpent {
 				if !handledSignedBy.Has(output.SignedBy) {
-					req, err := client.SafeReadMultisigRequests(ctx, output.SignedBy)
+					req, err := safeReadMultisigRequests(ctx, client, output.SignedBy)
 					if err != nil {
 						slog.Error("SafeReadMultisigRequests", "error", err)
+						s.handleJobClientError(job, err)
 						return err
 					}
 
 					if req.Amount.IsZero() {
 						h, _ := mixinnet.HashFromString(req.TransactionHash)
-						utxo, err := client.SafeReadUtxoByHash(ctx, h, 0)
+						utxo, err := safeReadUtxoByHash(ctx, client, h, 0)
 						if err != nil {
 							slog.Error("SafeReadUtxoByHash", "error", err)
+							s.handleJobClientError(job, err)
 							return err
 						}
 
@@ -181,7 +241,7 @@ func handleJob(ctx context.Context, db *badger.DB, job *Job) error {
 	vault.Offset = max(getNewOffset(a, b), vault.Offset)
 	vault.UpdatedAt = time.Now()
 
-	txn := db.NewTransaction(true)
+	txn := s.db.NewTransaction(true)
 	defer txn.Discard()
 
 	for _, s := range snapshots {
